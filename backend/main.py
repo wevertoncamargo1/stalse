@@ -16,9 +16,16 @@ from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data" / "raw"
-DB_PATH = ROOT / "backend" / "db.sqlite"
+DB_PATH = Path(os.getenv("DATABASE_PATH", str(ROOT / "backend" / "db.sqlite")))
 METRICS_FILE = ROOT / "data" / "processed" / "metrics.json"
 N8N_URL = os.getenv("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/stalse-ticket")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
 logger = logging.getLogger(__name__)
 
 CSV_TABLES = {
@@ -75,7 +82,7 @@ ORDER_STATUSES = (
 app = FastAPI(title="Stalse Ticket API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

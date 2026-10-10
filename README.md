@@ -158,6 +158,29 @@ Depois abra:
 - http://localhost:3000/tickets
 - http://localhost:3000/dashboard
 
+Na tela de pedidos, use os botões **Kanban** e **Lista** ao lado da busca para
+alternar a visualização. Ambas usam os mesmos dados, busca e prioridade; a lista
+carrega os próximos pedidos em lotes. Em telas menores, a lista reorganiza os
+dados em cartões e o Kanban mantém rolagem horizontal para preservar as colunas.
+
+### Deploy do frontend na Vercel
+
+O frontend pode ser publicado na Vercel separado da API:
+
+1. Importe o repositório na Vercel e defina `frontend` como **Root Directory**.
+2. Mantenha o preset **Next.js** e configure a variável de ambiente
+   `NEXT_PUBLIC_API_URL` com a URL pública da API FastAPI (sem barra final).
+3. Publique o projeto. A URL da Vercel deve ser incluída também em
+   `CORS_ORIGINS` no serviço que hospeda a API.
+
+A API não deve ser executada na Vercel nesta configuração: ela depende de SQLite
+gravável e dos arquivos CSV do Olist. Hospede-a em um serviço com disco
+persistente, configure `DATABASE_PATH` para um arquivo nesse disco e disponibilize
+os CSVs em `data/raw` antes da primeira inicialização. Configure
+`CORS_ORIGINS` como uma lista de origens separadas por vírgula, incluindo a URL
+de produção da Vercel; localmente, as origens localhost são permitidas por
+padrão. A API e os dados não são publicados pela configuração do frontend.
+
 ## Workflow do n8n
 
 O arquivo `n8n/workflow.json` contém um webhook que recebe alterações nos status logísticos do pedido ou na prioridade e encaminha o payload para um endpoint HTTP.
