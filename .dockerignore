@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+frontend/node_modules
+frontend/.next
+frontend/.vercel
+backend/__pycache__
+data/raw/*.csv
+data/raw/*.zip
+backend/db.sqlite
+*.pyc

@@ -1,0 +1,75 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      DATABASE_PATH: /app/data/stalse.sqlite
+      ACTIVITY_LOG_PATH: /app/data/processed/activity.jsonl
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/stalse-ticket
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      n8n:
+        condition: service_started
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  ollama:
+    image: ollama/ollama:0.12.3
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ollama-model:
+    image: curlimages/curl:8.12.1
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "curl --fail --silent --show-error http://ollama:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"llama3.2:3b\",\"stream\":false}'"
+    restart: "no"
+
+  n8n:
+    image: n8nio/n8n:1.114.4
+    ports:
+      - "5678:5678"
+    environment:
+      GENERIC_TIMEZONE: America/Sao_Paulo
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_RESTRICT_FILE_ACCESS_TO: /reports
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_SECURE_COOKIE: "false"
+      WEBHOOK_URL: http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/files/n8n:ro
+      - ./n8n/reports:/reports
+    depends_on:
+      ollama-model:
+        condition: service_completed_successfully
+
+volumes:
+  n8n_data:
+  ollama_data:
