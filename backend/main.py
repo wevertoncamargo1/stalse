@@ -7,18 +7,28 @@ import sqlite3
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 import requests
+import turso_serverless
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-ROOT = Path(__file__).resolve().parent.parent
+BACKEND_DIR = Path(__file__).resolve().parent
+ROOT = (
+    BACKEND_DIR.parent
+    if (BACKEND_DIR.parent / "data").is_dir()
+    else BACKEND_DIR
+)
 DATA_DIR = ROOT / "data" / "raw"
-DB_PATH = Path(os.getenv("DATABASE_PATH", str(ROOT / "backend" / "db.sqlite")))
+DB_PATH = Path(os.getenv("DATABASE_PATH", str(BACKEND_DIR / "db.sqlite")))
 METRICS_FILE = ROOT / "data" / "processed" / "metrics.json"
 N8N_URL = os.getenv("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/stalse-ticket")
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+REMOTE_DATABASE_ENABLED = bool(TURSO_DATABASE_URL or TURSO_AUTH_TOKEN)
+REMOTE_DATASET_VERSION = "olist-orders-v1"
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -27,6 +37,12 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 logger = logging.getLogger(__name__)
+DatabaseConnection = sqlite3.Connection | turso_serverless.Connection
+
+
+class BoardColumn(TypedDict):
+    tickets: list[dict]
+    total: int
 
 CSV_TABLES = {
     "customers": (
@@ -89,12 +105,32 @@ app.add_middleware(
 )
 
 
-def get_connection() -> sqlite3.Connection:
+def get_local_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.create_function("normalize_text", 1, normalize_text)
     return conn
+
+
+def get_remote_connection() -> turso_serverless.Connection:
+    if not TURSO_DATABASE_URL or not TURSO_AUTH_TOKEN:
+        raise RuntimeError(
+            "Both TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required "
+            "when using the remote database."
+        )
+    conn = turso_serverless.connect(
+        TURSO_DATABASE_URL,
+        auth_token=TURSO_AUTH_TOKEN,
+    )
+    conn.row_factory = turso_serverless.Row
+    return conn
+
+
+def get_connection() -> DatabaseConnection:
+    if REMOTE_DATABASE_ENABLED:
+        return get_remote_connection()
+    return get_local_connection()
 
 
 def normalize_text(value: str | None) -> str:
@@ -110,12 +146,12 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def table_count(conn: sqlite3.Connection, table: str) -> int:
+def table_count(conn: DatabaseConnection, table: str) -> int:
     return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
 def import_csv(
-    conn: sqlite3.Connection,
+    conn: DatabaseConnection,
     path: Path,
     table: str,
     columns: tuple[str, ...],
@@ -148,7 +184,7 @@ def import_csv(
             conn.executemany(statement, batch)
 
 
-def ensure_order_columns(conn: sqlite3.Connection) -> None:
+def ensure_order_columns(conn: DatabaseConnection) -> None:
     existing = {
         row["name"] for row in conn.execute("PRAGMA table_info(orders)").fetchall()
     }
@@ -175,7 +211,7 @@ def ensure_order_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {column} {definition}")
 
 
-def create_schema(conn: sqlite3.Connection) -> None:
+def create_schema(conn: DatabaseConnection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS orders (
@@ -304,7 +340,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
     create_order_fts(conn)
 
 
-def create_order_fts(conn: sqlite3.Connection) -> None:
+def create_order_fts(conn: DatabaseConnection) -> None:
     conn.execute(
         """
         CREATE VIRTUAL TABLE IF NOT EXISTS orders_fts USING fts5(
@@ -323,7 +359,7 @@ def create_order_fts(conn: sqlite3.Connection) -> None:
     )
 
 
-def rebuild_order_fts(conn: sqlite3.Connection) -> None:
+def rebuild_order_fts(conn: DatabaseConnection) -> None:
     conn.execute(
         "UPDATE orders SET customer_city_search = normalize_text(customer_city)"
     )
@@ -344,7 +380,67 @@ def rebuild_order_fts(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_enrichment_tables(conn: sqlite3.Connection) -> None:
+def create_remote_schema(conn: turso_serverless.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY,
+            order_id TEXT NOT NULL UNIQUE,
+            customer_id TEXT NOT NULL,
+            order_status TEXT NOT NULL,
+            order_purchase_timestamp TEXT NOT NULL,
+            order_approved_at TEXT,
+            order_delivered_carrier_date TEXT,
+            order_delivered_customer_date TEXT,
+            order_estimated_delivery_date TEXT,
+            customer_unique_id TEXT,
+            customer_city TEXT,
+            customer_city_search TEXT,
+            customer_state TEXT,
+            product_categories TEXT,
+            item_count INTEGER,
+            items_total REAL,
+            freight_total REAL,
+            payment_total REAL,
+            payment_types TEXT,
+            review_score REAL,
+            review_count INTEGER,
+            review_comments TEXT,
+            status TEXT,
+            priority TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dataset_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_purchase
+        ON orders(order_purchase_timestamp DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_status_priority_purchase
+        ON orders(order_status, priority, order_purchase_timestamp DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_city_search
+        ON orders(customer_city_search)
+        """
+    )
+
+
+def create_enrichment_tables(conn: DatabaseConnection) -> None:
     conn.execute("DROP TABLE IF EXISTS temp.order_enrichment")
     conn.execute(
         """
@@ -453,7 +549,7 @@ def ensure_db() -> None:
         )
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = get_connection()
+    conn = get_local_connection()
     try:
         create_schema(conn)
         orders_columns = (
@@ -558,7 +654,35 @@ def ensure_db() -> None:
         conn.close()
 
 
-def serialize_order(row: sqlite3.Row) -> dict:
+def ensure_remote_db() -> None:
+    conn = get_remote_connection()
+    try:
+        metadata = conn.execute(
+            """
+            SELECT key, value FROM dataset_metadata
+            WHERE key IN ('remote_seed_version', 'review_metrics')
+            """
+        ).fetchall()
+        values = {row["key"]: row["value"] for row in metadata}
+        seed = values.get("remote_seed_version")
+        if seed != REMOTE_DATASET_VERSION:
+            raise RuntimeError(
+                "The remote orders database is not initialized. "
+                "Run `python backend/seed_turso.py` from the project root."
+            )
+        metrics = values.get("review_metrics")
+        if metrics is None:
+            raise RuntimeError(
+                "The remote database is missing review metrics. "
+                "Run `python backend/seed_turso.py --replace` from the project root."
+            )
+        if not isinstance(json.loads(metrics), dict):
+            raise RuntimeError("The remote review metrics must contain a JSON object.")
+    finally:
+        conn.close()
+
+
+def serialize_order(row: sqlite3.Row | turso_serverless.Row) -> dict:
     return {key: row[key] for key in row.keys()}
 
 
@@ -573,17 +697,27 @@ def ticket_filters(
     if search_term:
         normalized_city = normalize_text(search_term)
         if len(search_term) >= 3:
-            filters.append(
-                """
-                orders.id IN (
-                    SELECT rowid FROM orders_fts
-                    WHERE order_id LIKE ? OR customer_id LIKE ? OR order_status LIKE ?
-                       OR customer_unique_id LIKE ? OR customer_city_search LIKE ?
-                       OR customer_state LIKE ? OR product_categories LIKE ?
-                       OR review_comments LIKE ?
+            if REMOTE_DATABASE_ENABLED:
+                filters.append(
+                    """
+                    (orders.order_id LIKE ? OR orders.customer_id LIKE ?
+                     OR orders.order_status LIKE ? OR orders.customer_unique_id LIKE ?
+                     OR orders.customer_city_search LIKE ? OR orders.customer_state LIKE ?
+                     OR orders.product_categories LIKE ? OR orders.review_comments LIKE ?)
+                    """
                 )
-                """
-            )
+            else:
+                filters.append(
+                    """
+                    orders.id IN (
+                        SELECT rowid FROM orders_fts
+                        WHERE order_id LIKE ? OR customer_id LIKE ? OR order_status LIKE ?
+                           OR customer_unique_id LIKE ? OR customer_city_search LIKE ?
+                           OR customer_state LIKE ? OR product_categories LIKE ?
+                           OR review_comments LIKE ?
+                    )
+                    """
+                )
             parameters.extend(
                 [
                     f"%{search_term}%",
@@ -610,13 +744,35 @@ def ticket_filters(
 
 
 def ticket_page(
-    conn: sqlite3.Connection,
+    conn: DatabaseConnection,
     search_term: str,
     status: str | None,
     limit: int,
     offset: int,
 ) -> tuple[list[dict], int]:
     where_clause, parameters = ticket_filters(search_term, status)
+    if REMOTE_DATABASE_ENABLED:
+        rows = conn.execute(
+            f"""
+            SELECT orders.*, COUNT(*) OVER() AS _page_total
+            FROM orders
+            {where_clause}
+            ORDER BY
+                CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+                order_purchase_timestamp DESC,
+                id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*parameters, limit, offset),
+        ).fetchall()
+        total = rows[0]["_page_total"] if rows else 0
+        tickets = []
+        for row in rows:
+            ticket = serialize_order(row)
+            ticket.pop("_page_total")
+            tickets.append(ticket)
+        return tickets, total
+
     total = conn.execute(
         f"SELECT COUNT(*) FROM orders {where_clause}", tuple(parameters)
     ).fetchone()[0]
@@ -668,7 +824,10 @@ class TicketPatch(BaseModel):
 
 @app.on_event("startup")
 def startup_event() -> None:
-    ensure_db()
+    if REMOTE_DATABASE_ENABLED:
+        ensure_remote_db()
+    else:
+        ensure_db()
 
 
 @app.get("/health")
@@ -709,7 +868,49 @@ def ticket_board(
     per_column: int = Query(default=20, ge=1, le=100),
 ) -> dict:
     conn = get_connection()
-    columns = {}
+    columns: dict[str, BoardColumn] = {
+        status: {"tickets": [], "total": 0} for status in ORDER_STATUSES
+    }
+    if REMOTE_DATABASE_ENABLED:
+        where_clause, parameters = ticket_filters(q.strip())
+        rows = conn.execute(
+            f"""
+            WITH ranked_orders AS (
+                SELECT
+                    orders.*,
+                    COUNT(*) OVER (PARTITION BY order_status) AS _column_total,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY order_status
+                        ORDER BY
+                            CASE priority
+                                WHEN 'high' THEN 0
+                                WHEN 'medium' THEN 1
+                                WHEN 'low' THEN 2
+                                ELSE 3
+                            END,
+                            order_purchase_timestamp DESC,
+                            id DESC
+                    ) AS _column_rank
+                FROM orders
+                {where_clause}
+            )
+            SELECT *
+            FROM ranked_orders
+            WHERE _column_rank <= ?
+            """,
+            (*parameters, per_column),
+        ).fetchall()
+        for row in rows:
+            ticket = serialize_order(row)
+            status = ticket["order_status"]
+            column_total = ticket.pop("_column_total")
+            ticket.pop("_column_rank")
+            column = columns[status]
+            column["tickets"].append(ticket)
+            column["total"] = column_total
+        conn.close()
+        return {"columns": columns, "per_column": per_column}
+
     for status in ORDER_STATUSES:
         tickets, total = ticket_page(conn, q.strip(), status, per_column, 0)
         columns[status] = {"tickets": tickets, "total": total}
@@ -753,10 +954,11 @@ def patch_ticket(
         (*updates.values(), iso_now(), ticket_id),
     )
     if "order_status" in updates:
-        conn.execute(
-            "UPDATE orders_fts SET order_status = ? WHERE rowid = ?",
-            (updates["order_status"], ticket_id),
-        )
+        if not REMOTE_DATABASE_ENABLED:
+            conn.execute(
+                "UPDATE orders_fts SET order_status = ? WHERE rowid = ?",
+                (updates["order_status"], ticket_id),
+            )
     conn.commit()
     row = conn.execute("SELECT * FROM orders WHERE id = ?", (ticket_id,)).fetchone()
     conn.close()
@@ -771,15 +973,28 @@ def patch_ticket(
 
 @app.get("/metrics")
 def metrics() -> dict:
-    if not METRICS_FILE.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="Metrics file not found. Run the reviews ETL script first.",
-        )
-    with METRICS_FILE.open("r", encoding="utf-8") as source:
-        result = json.load(source)
-
     conn = get_connection()
+    if REMOTE_DATABASE_ENABLED:
+        review_metrics = conn.execute(
+            "SELECT value FROM dataset_metadata WHERE key = 'review_metrics'"
+        ).fetchone()
+        if review_metrics is None:
+            conn.close()
+            raise HTTPException(
+                status_code=503,
+                detail="Remote review metrics are missing. Seed the remote database first.",
+            )
+        result = json.loads(review_metrics["value"])
+    else:
+        if not METRICS_FILE.exists():
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Metrics file not found. Run the reviews ETL script first.",
+            )
+        with METRICS_FILE.open("r", encoding="utf-8") as source:
+            result = json.load(source)
+
     total_orders = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
     fulfillment_status = conn.execute(
         """
