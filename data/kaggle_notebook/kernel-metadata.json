@@ -1,0 +1,27 @@
+{
+  "id": "anshumoudgil/olist-ecommerce-analytics-quasi-poisson-poly-regs",
+  "id_no": 3683355,
+  "title": "Olist eCommerce-Analytics, Quasi Poisson+Poly Regs",
+  "code_file": "olist-ecommerce-analytics-quasi-poisson-poly-regs.Rmd",
+  "language": "rmarkdown",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [
+    "data visualization",
+    "feature engineering",
+    "data analytics",
+    "business"
+  ],
+  "dataset_sources": [
+    "olistbr/brazilian-ecommerce",
+    "olistbr/marketing-funnel-olist"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-images/rstats@sha256:7c78c200e8549d51ce00465f9b8eec04476de85cc883a7ff953cfd768bbc9113",
+  "machine_shape": "None"
+}

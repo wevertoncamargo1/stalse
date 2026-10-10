@@ -1,0 +1,146 @@
+{
+  "name": "Stalse Ticket Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "stalse-ticket",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "status-created",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "created",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-processing",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "processing",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-approved",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "approved",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-unavailable",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "unavailable",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-invoiced",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "invoiced",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-shipped",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "shipped",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-canceled",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "canceled",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "status-delivered",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "delivered",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "priority-check",
+              "leftValue": "={{ $json.priority }}",
+              "rightValue": "high",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "condition-node",
+      "name": "If valid order status or high priority",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { event: 'ticket_updated', ticket_id: $json.ticket_id, order_id: $json.order_id, status: $json.status, priority: $json.priority, order_status: $json.order_status, updated_at: $json.updated_at } }}",
+        "options": {},
+        "headerParameters": {
+          "parameters": [{
+            "name": "Content-Type",
+            "value": "application/json"
+          }]
+        }
+      },
+      "id": "http-request-node",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [780, 300]
+    }
+  ],
+  "connections": {
+    "webhook-node": {
+      "main": [
+        [
+          {
+            "node": "condition-node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "condition-node": {
+      "main": [
+        [
+          {
+            "node": "http-request-node",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [{ "name": "stalse" }],
+  "triggerCount": 1,
+  "versionId": "1"
+}

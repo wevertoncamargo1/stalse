@@ -1,0 +1,16 @@
+node_modules/
+.venv/
+venv/
+.next/
+.vercel/
+__pycache__/
+*.pyc
+*.sqlite
+backend/db.sqlite
+.env
+.env.*
+!.env.example
+data/raw/*.csv
+data/raw/*.zip
+.DS_Store
+npm-debug.log*
