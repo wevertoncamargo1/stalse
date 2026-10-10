@@ -2,8 +2,9 @@ import csv
 import json
 import logging
 import os
-import random
 import sqlite3
+import threading
+import time
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Literal, TypedDict
 
 import requests
 import turso_serverless
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -24,11 +25,24 @@ ROOT = (
 DATA_DIR = ROOT / "data" / "raw"
 DB_PATH = Path(os.getenv("DATABASE_PATH", str(BACKEND_DIR / "db.sqlite")))
 METRICS_FILE = ROOT / "data" / "processed" / "metrics.json"
+ACTIVITY_LOG_FILE = Path(
+    os.getenv(
+        "ACTIVITY_LOG_PATH",
+        str(
+            Path(os.getenv("TMPDIR", "/tmp")) / "stalse-activity.jsonl"
+            if os.getenv("VERCEL")
+            else ROOT / "data" / "processed" / "activity.jsonl"
+        ),
+    )
+)
 N8N_URL = os.getenv("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/stalse-ticket")
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 REMOTE_DATABASE_ENABLED = bool(TURSO_DATABASE_URL or TURSO_AUTH_TOKEN)
 REMOTE_DATASET_VERSION = "olist-orders-v1"
+TICKET_LIFECYCLE_VERSION = "ticket-lifecycle-v1"
+ACTIVITY_LOG_LIMIT = 200
+ACTIVITY_LOG_WINDOW_MINUTES = 15
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -39,6 +53,7 @@ CORS_ORIGINS = [
 if "https://stalse-web.vercel.app" not in CORS_ORIGINS:
     CORS_ORIGINS.append("https://stalse-web.vercel.app")
 logger = logging.getLogger(__name__)
+activity_log_lock = threading.Lock()
 DatabaseConnection = sqlite3.Connection | turso_serverless.Connection
 
 
@@ -105,6 +120,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def audit_api_request(request: Request, call_next):
+    if request.url.path not in {"/tickets", "/tickets/board", "/metrics"} and not (
+        request.url.path.startswith("/tickets/")
+    ):
+        return await call_next(request)
+
+    started_at = time.perf_counter()
+    actor = request.headers.get("x-operator-name", "").strip()[:80] or None
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("API request failed: %s %s", request.method, request.url.path)
+        try:
+            write_activity_log(
+                {"outcome": "exception"},
+                event_type="api_request",
+                actor=actor,
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+            )
+        except Exception:
+            logger.exception("Could not persist failed API request activity")
+        raise
+
+    try:
+        write_activity_log(
+            {},
+            event_type="api_request",
+            actor=actor,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=round((time.perf_counter() - started_at) * 1000),
+        )
+    except Exception:
+        logger.exception("Could not persist API request activity")
+    return response
 
 
 def get_local_connection() -> sqlite3.Connection:
@@ -317,6 +374,7 @@ def create_schema(conn: DatabaseConnection) -> None:
         )
         """
     )
+    create_activity_log_schema(conn)
     ensure_order_columns(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_orders_purchase ON orders(order_purchase_timestamp DESC, id DESC)"
@@ -330,6 +388,12 @@ def create_schema(conn: DatabaseConnection) -> None:
             order_purchase_timestamp DESC,
             id DESC
         )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_priority
+        ON orders(status, priority, order_purchase_timestamp DESC, id DESC)
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_city_search ON orders(customer_city_search)")
@@ -422,6 +486,7 @@ def create_remote_schema(conn: turso_serverless.Connection) -> None:
         )
         """
     )
+    create_activity_log_schema(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_orders_purchase
@@ -436,10 +501,167 @@ def create_remote_schema(conn: turso_serverless.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_priority
+        ON orders(status, priority, order_purchase_timestamp DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_orders_city_search
         ON orders(customer_city_search)
         """
     )
+
+
+def create_activity_log_schema(conn: DatabaseConnection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activity_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            actor TEXT,
+            method TEXT,
+            path TEXT,
+            status_code INTEGER,
+            duration_ms INTEGER,
+            ticket_id INTEGER,
+            order_id TEXT,
+            details_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_activity_logs_created
+        ON activity_logs(created_at DESC, id DESC)
+        """
+    )
+
+
+def initialize_ticket_lifecycle(conn: DatabaseConnection) -> None:
+    lifecycle = conn.execute(
+        "SELECT value FROM dataset_metadata WHERE key = ?",
+        (TICKET_LIFECYCLE_VERSION,),
+    ).fetchone()
+    if lifecycle is None:
+        conn.execute(
+            """
+            UPDATE orders
+            SET status = CASE
+                WHEN order_status IN ('delivered', 'canceled') THEN 'closed'
+                ELSE 'open'
+            END,
+            priority = NULL,
+            updated_at = NULL
+            """
+        )
+        conn.execute(
+            "INSERT INTO dataset_metadata (key, value) VALUES (?, '1')",
+            (TICKET_LIFECYCLE_VERSION,),
+        )
+
+
+def write_activity_log(
+    event: dict,
+    *,
+    event_type: str,
+    actor: str | None = None,
+    method: str | None = None,
+    path: str | None = None,
+    status_code: int | None = None,
+    duration_ms: int | None = None,
+    ticket_id: int | None = None,
+    order_id: str | None = None,
+) -> None:
+    created_at = iso_now()
+    event_record = {
+        "created_at": created_at,
+        "event_type": event_type,
+        "actor": actor,
+        "method": method,
+        "path": path,
+        "status_code": status_code,
+        "duration_ms": duration_ms,
+        "ticket_id": ticket_id,
+        "order_id": order_id,
+        "details": event,
+    }
+    conn = get_connection()
+    try:
+        insert_activity_row(conn, event_record)
+        conn.commit()
+    finally:
+        conn.close()
+
+    append_activity_file(event_record)
+
+
+def insert_activity_row(conn: DatabaseConnection, event_record: dict) -> None:
+    conn.execute(
+        """
+        INSERT INTO activity_logs (
+            created_at, event_type, actor, method, path, status_code,
+            duration_ms, ticket_id, order_id, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_record["created_at"],
+            event_record["event_type"],
+            event_record["actor"],
+            event_record["method"],
+            event_record["path"],
+            event_record["status_code"],
+            event_record["duration_ms"],
+            event_record["ticket_id"],
+            event_record["order_id"],
+            json.dumps(event_record["details"], ensure_ascii=False),
+        ),
+    )
+
+
+def append_activity_file(event_record: dict) -> None:
+    try:
+        ACTIVITY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with activity_log_lock, ACTIVITY_LOG_FILE.open(
+            "a", encoding="utf-8", newline="\n"
+        ) as output:
+            output.write(json.dumps(event_record, ensure_ascii=False) + "\n")
+    except OSError:
+        logger.exception("Could not append activity event to %s", ACTIVITY_LOG_FILE)
+
+
+def recent_activity_logs(conn: DatabaseConnection) -> list[dict]:
+    threshold = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - ACTIVITY_LOG_WINDOW_MINUTES * 60,
+        tz=timezone.utc,
+    ).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = conn.execute(
+        """
+        SELECT created_at, event_type, actor, method, path, status_code,
+               duration_ms, ticket_id, order_id, details_json
+        FROM activity_logs
+        WHERE created_at >= ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (threshold, ACTIVITY_LOG_LIMIT),
+    ).fetchall()
+    return [
+        {
+            "created_at": row["created_at"],
+            "event_type": row["event_type"],
+            "actor": row["actor"],
+            "method": row["method"],
+            "path": row["path"],
+            "status_code": row["status_code"],
+            "duration_ms": row["duration_ms"],
+            "ticket_id": row["ticket_id"],
+            "order_id": row["order_id"],
+            "details": json.loads(row["details_json"]),
+        }
+        for row in rows
+    ]
 
 
 def create_enrichment_tables(conn: DatabaseConnection) -> None:
@@ -629,25 +851,7 @@ def ensure_db() -> None:
                 VALUES ('accent_insensitive_city_search', '1')
                 """
             )
-        randomized_priorities = conn.execute(
-            "SELECT value FROM dataset_metadata WHERE key = 'priorities_randomized_once'"
-        ).fetchone()
-        if randomized_priorities is None:
-            generator = random.SystemRandom()
-            order_ids = conn.execute("SELECT id FROM orders").fetchall()
-            conn.executemany(
-                "UPDATE orders SET priority = ? WHERE id = ?",
-                (
-                    (generator.choice(("low", "medium", "high")), row["id"])
-                    for row in order_ids
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO dataset_metadata (key, value)
-                VALUES ('priorities_randomized_once', '1')
-                """
-            )
+        initialize_ticket_lifecycle(conn)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -659,11 +863,13 @@ def ensure_db() -> None:
 def ensure_remote_db() -> None:
     conn = get_remote_connection()
     try:
+        create_activity_log_schema(conn)
         metadata = conn.execute(
             """
             SELECT key, value FROM dataset_metadata
-            WHERE key IN ('remote_seed_version', 'review_metrics')
-            """
+            WHERE key IN ('remote_seed_version', 'review_metrics', ?)
+            """,
+            (TICKET_LIFECYCLE_VERSION,),
         ).fetchall()
         values = {row["key"]: row["value"] for row in metadata}
         seed = values.get("remote_seed_version")
@@ -680,6 +886,8 @@ def ensure_remote_db() -> None:
             )
         if not isinstance(json.loads(metrics), dict):
             raise RuntimeError("The remote review metrics must contain a JSON object.")
+        initialize_ticket_lifecycle(conn)
+        conn.commit()
     finally:
         conn.close()
 
@@ -689,13 +897,25 @@ def serialize_order(row: sqlite3.Row | turso_serverless.Row) -> dict:
 
 
 def ticket_filters(
-    search_term: str, status: str | None = None
+    search_term: str,
+    status: str | None = None,
+    ticket_status: str | None = None,
+    priority: str | None = None,
 ) -> tuple[str, list[str]]:
     filters = []
     parameters = []
     if status:
         filters.append("orders.order_status = ?")
         parameters.append(status)
+    if ticket_status:
+        filters.append("orders.status = ?")
+        parameters.append(ticket_status)
+    if priority:
+        if priority == "none":
+            filters.append("orders.priority IS NULL")
+        else:
+            filters.append("orders.priority = ?")
+            parameters.append(priority)
     if search_term:
         normalized_city = normalize_text(search_term)
         if len(search_term) >= 3:
@@ -751,8 +971,12 @@ def ticket_page(
     status: str | None,
     limit: int,
     offset: int,
+    ticket_status: str | None = None,
+    priority: str | None = None,
 ) -> tuple[list[dict], int]:
-    where_clause, parameters = ticket_filters(search_term, status)
+    where_clause, parameters = ticket_filters(
+        search_term, status, ticket_status, priority
+    )
     if REMOTE_DATABASE_ENABLED:
         rows = conn.execute(
             f"""
@@ -793,15 +1017,24 @@ def ticket_page(
     return [serialize_order(row) for row in rows], total
 
 
-def trigger_n8n(ticket: dict) -> None:
+def trigger_n8n(ticket: dict, actor: str, triggers: list[str]) -> None:
+    conn = get_connection()
+    try:
+        logs = recent_activity_logs(conn)
+    finally:
+        conn.close()
     payload = {
-        "event": "ticket_updated",
+        "event": "ticket_review_requested",
+        "triggers": triggers,
+        "actor": actor,
         "ticket_id": ticket["id"],
         "order_id": ticket["order_id"],
-        "status": ticket["order_status"],
-        "priority": ticket["priority"],
+        "ticket_status": ticket["status"],
         "order_status": ticket["order_status"],
+        "priority": ticket["priority"],
         "updated_at": ticket["updated_at"],
+        "logs_window_minutes": ACTIVITY_LOG_WINDOW_MINUTES,
+        "logs": logs,
     }
     try:
         response = requests.post(N8N_URL, json=payload, timeout=5)
@@ -850,11 +1083,15 @@ def list_tickets(
         "created",
         "approved",
     ] | None = None,
+    ticket_status: Literal["open", "closed"] | None = None,
+    priority: Literal["low", "medium", "high", "none"] | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     conn = get_connection()
-    tickets, total = ticket_page(conn, q.strip(), status, limit, offset)
+    tickets, total = ticket_page(
+        conn, q.strip(), status, limit, offset, ticket_status, priority
+    )
     conn.close()
     return {
         "tickets": tickets,
@@ -867,6 +1104,8 @@ def list_tickets(
 @app.get("/tickets/board")
 def ticket_board(
     q: str = Query(default="", max_length=200),
+    ticket_status: Literal["open", "closed"] | None = None,
+    priority: Literal["low", "medium", "high", "none"] | None = None,
     per_column: int = Query(default=20, ge=1, le=100),
 ) -> dict:
     conn = get_connection()
@@ -874,7 +1113,9 @@ def ticket_board(
         status: {"tickets": [], "total": 0} for status in ORDER_STATUSES
     }
     if REMOTE_DATABASE_ENABLED:
-        where_clause, parameters = ticket_filters(q.strip())
+        where_clause, parameters = ticket_filters(
+            q.strip(), ticket_status=ticket_status, priority=priority
+        )
         rows = conn.execute(
             f"""
             WITH ranked_orders AS (
@@ -914,7 +1155,15 @@ def ticket_board(
         return {"columns": columns, "per_column": per_column}
 
     for status in ORDER_STATUSES:
-        tickets, total = ticket_page(conn, q.strip(), status, per_column, 0)
+        tickets, total = ticket_page(
+            conn,
+            q.strip(),
+            status,
+            per_column,
+            0,
+            ticket_status,
+            priority,
+        )
         columns[status] = {"tickets": tickets, "total": total}
     conn.close()
     return {"columns": columns, "per_column": per_column}
@@ -932,13 +1181,25 @@ def get_ticket(ticket_id: int) -> dict:
 
 @app.patch("/tickets/{ticket_id}")
 def patch_ticket(
-    ticket_id: int, payload: TicketPatch, background_tasks: BackgroundTasks
+    ticket_id: int,
+    payload: TicketPatch,
+    background_tasks: BackgroundTasks,
+    operator: str = Header(alias="X-Operator-Name", min_length=2, max_length=80),
 ) -> dict:
+    operator = operator.strip()
+    if len(operator) < 2:
+        raise HTTPException(status_code=422, detail="Informe o nome do operador.")
+
     updates: dict[str, str | None] = {}
     if "order_status" in payload.model_fields_set:
         if payload.order_status is None:
             raise HTTPException(status_code=422, detail="order_status cannot be null")
         updates["order_status"] = payload.order_status
+        updates["status"] = (
+            "closed"
+            if payload.order_status in {"delivered", "canceled"}
+            else "open"
+        )
     if "priority" in payload.model_fields_set:
         updates["priority"] = payload.priority
     if not updates:
@@ -950,10 +1211,12 @@ def patch_ticket(
         conn.close()
         raise HTTPException(status_code=404, detail="Order not found")
 
+    previous = serialize_order(current)
+    updated_at = iso_now()
     set_clause = ", ".join(f"{column} = ?" for column in updates)
     conn.execute(
         f"UPDATE orders SET {set_clause}, updated_at = ? WHERE id = ?",
-        (*updates.values(), iso_now(), ticket_id),
+        (*updates.values(), updated_at, ticket_id),
     )
     if "order_status" in updates:
         if not REMOTE_DATABASE_ENABLED:
@@ -961,15 +1224,44 @@ def patch_ticket(
                 "UPDATE orders_fts SET order_status = ? WHERE rowid = ?",
                 (updates["order_status"], ticket_id),
             )
-    conn.commit()
     row = conn.execute("SELECT * FROM orders WHERE id = ?", (ticket_id,)).fetchone()
-    conn.close()
     ticket = serialize_order(row)
 
-    status_changed = ticket["order_status"] != current["order_status"]
-    changed_to_high = ticket["priority"] == "high" and current["priority"] != "high"
-    if status_changed or changed_to_high:
-        background_tasks.add_task(trigger_n8n, ticket)
+    status_changed = ticket["order_status"] != previous["order_status"]
+    lifecycle_changed = ticket["status"] != previous["status"]
+    priority_changed = ticket["priority"] != previous["priority"]
+    event_record = {
+        "created_at": updated_at,
+        "event_type": "ticket_updated",
+        "actor": operator,
+        "method": "PATCH",
+        "path": f"/tickets/{ticket_id}",
+        "status_code": 200,
+        "duration_ms": None,
+        "ticket_id": ticket_id,
+        "order_id": ticket["order_id"],
+        "details": {
+            "changes": {
+                field: {"from": previous[field], "to": ticket[field]}
+                for field in ("order_status", "status", "priority")
+                if previous[field] != ticket[field]
+            }
+        },
+    }
+    if status_changed or lifecycle_changed or priority_changed:
+        insert_activity_row(conn, event_record)
+    conn.commit()
+    conn.close()
+    if status_changed or lifecycle_changed or priority_changed:
+        append_activity_file(event_record)
+
+    triggers = []
+    if ticket["status"] == "closed" and previous["status"] != "closed":
+        triggers.append("ticket_closed")
+    if ticket["priority"] == "high" and previous["priority"] != "high":
+        triggers.append("priority_high")
+    if triggers:
+        background_tasks.add_task(trigger_n8n, ticket, operator, triggers)
     return ticket
 
 
@@ -1006,6 +1298,13 @@ def metrics() -> dict:
         ORDER BY count DESC
         """
     ).fetchall()
+    ticket_status_counts = conn.execute(
+        """
+        SELECT status, COUNT(*) AS count
+        FROM orders
+        GROUP BY status
+        """
+    ).fetchall()
     top_cities = conn.execute(
         """
         SELECT
@@ -1023,16 +1322,23 @@ def metrics() -> dict:
     status_counts = {
         row["order_status"]: row["count"] for row in fulfillment_status
     }
+    ticket_counts = {row["status"]: row["count"] for row in ticket_status_counts}
     result["orders"] = {
         "summary": {
             "total_orders": total_orders,
             "delivered": status_counts.get("delivered", 0),
             "canceled": status_counts.get("canceled", 0),
             "unavailable": status_counts.get("unavailable", 0),
+            "open_tickets": ticket_counts.get("open", 0),
+            "closed_tickets": ticket_counts.get("closed", 0),
         },
         "by_status": [
             {"status": status, "count": status_counts.get(status, 0)}
             for status in ORDER_STATUSES
+        ],
+        "by_ticket_status": [
+            {"status": status, "count": ticket_counts.get(status, 0)}
+            for status in ("open", "closed")
         ],
         "by_city": [dict(row) for row in top_cities],
     }
