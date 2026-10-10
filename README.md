@@ -6,8 +6,9 @@ Mini Inbox de pedidos Olist com API FastAPI, Next.js, métricas de avaliações 
 
 Para rodar o projeto completo com Docker: Docker Desktop com Docker Compose v2. Sem Docker: Python 3.10+, Node.js 18+ e n8n; a análise local dos logs também precisa do Ollama e do modelo `llama3.2:3b`.
 
-Baixe os CSVs do [dataset Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce). O backend usa pedidos, clientes, itens, produtos, tradução de categorias, pagamentos e reviews; o ETL lê `olist_order_reviews_dataset.csv`. O notebook de referência é [Olist eCommerce-Analytics, Quasi Poisson + Poly Regs](https://www.kaggle.com/code/anshumoudgil/olist-ecommerce-analytics-quasi-poisson-poly-regs).
+Os sete CSVs usados pela aplicação já estão em `data/raw/`; não é necessária conta, autenticação ou token Kaggle para avaliação. Eles vêm do [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), disponibilizado sob a licença **CC BY-NC-SA 4.0**. A redistribuição neste repositório é para avaliação técnica não comercial; atribuição: Olist, *Brazilian E-Commerce Public Dataset*, Kaggle. Ao reutilizar os dados, mantenha a atribuição, respeite a licença não comercial e compartilhe adaptações sob os mesmos termos. O notebook de referência é [Olist eCommerce-Analytics, Quasi Poisson + Poly Regs](https://www.kaggle.com/code/anshumoudgil/olist-ecommerce-analytics-quasi-poisson-poly-regs).
 
+Para baixar uma cópia atualizada do dataset manualmente, use a autenticação oficial do Kaggle:
 ```powershell
 python -m pip install kaggle
 kaggle auth login
@@ -15,17 +16,17 @@ New-Item -ItemType Directory -Force data\raw
 kaggle datasets download -d olistbr/brazilian-ecommerce -p data/raw --unzip
 ```
 
-Respeite a licença e os termos do Kaggle. Não coloque tokens de API no repositório.
+Nunca coloque tokens ou credenciais no repositório.
 
 ## Rodar tudo com Docker Compose
 
-Com os CSVs em `data/raw/`, execute na raiz:
+Na raiz do projeto, execute:
 
 ```powershell
 docker compose up --build
 ```
 
-Primeira inicialização instala as dependências, gera as métricas, importa pedidos no SQLite e baixa o modelo Ollama (`llama3.2:3b`, alguns GB). A base, os logs, os relatórios, os dados do n8n e o modelo ficam em volumes locais.
+Esse único comando constrói e inicia frontend, API, n8n e Ollama. Na primeira execução, gera as métricas, importa os pedidos no SQLite, baixa o modelo Ollama (`llama3.2:3b`, cerca de 2 GB) e importa/ativa o workflow de auditoria automaticamente. O primeiro início pode demorar por causa dos downloads e da carga do banco. A base, os logs, os relatórios, os dados do n8n e o modelo ficam em volumes locais.
 
 - Frontend: <http://localhost:3000/tickets>
 - Métricas: <http://localhost:3000/dashboard>
@@ -33,15 +34,7 @@ Primeira inicialização instala as dependências, gera as métricas, importa pe
 - ReDoc: <http://localhost:8000/redoc>
 - n8n: <http://localhost:5678>
 
-No primeiro acesso ao n8n, crie o usuário proprietário. Depois importe e ative o workflow (uma vez):
-
-```powershell
-docker compose stop n8n
-docker compose run --rm --no-deps n8n import:workflow --input=/files/n8n/workflow.json
-docker compose start n8n
-```
-
-Ative **Stalse - Auditoria inteligente de tickets** no editor do n8n. Relatórios Markdown gerados ficam em `n8n/reports/`. Para encerrar: `docker compose down`; os volumes nomeados e os dados locais permanecem. Para removê-los explicitamente, use `docker compose down -v`.
+Para abrir o editor do n8n e consultar execuções, crie o usuário proprietário no primeiro acesso; isso não é necessário para a API disparar o workflow. O arquivo versionado é importado e ativado na inicialização do container. Relatórios Markdown gerados ficam em `n8n/reports/`. Para encerrar: `docker compose down`; os volumes e dados locais permanecem. Para removê-los explicitamente, use `docker compose down -v`.
 
 ## Rodar sem Docker
 
