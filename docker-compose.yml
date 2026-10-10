@@ -49,6 +49,13 @@ services:
 
   n8n:
     image: n8nio/n8n:1.114.4
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        n8n import:workflow --input=/files/n8n/workflow.json
+        n8n update:workflow --id=i2sSnB9v3Zoe1hUK --active=true
+        exec n8n start
     ports:
       - "5678:5678"
     environment:

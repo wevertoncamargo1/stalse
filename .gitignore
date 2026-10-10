@@ -12,6 +12,13 @@ data/stalse.sqlite*
 .env.*
 !.env.example
 data/raw/*.csv
+!data/raw/olist_customers_dataset.csv
+!data/raw/olist_orders_dataset.csv
+!data/raw/olist_order_items_dataset.csv
+!data/raw/olist_order_payments_dataset.csv
+!data/raw/olist_order_reviews_dataset.csv
+!data/raw/olist_products_dataset.csv
+!data/raw/product_category_name_translation.csv
 data/raw/*.zip
 data/processed/activity.jsonl
 n8n/reports/
