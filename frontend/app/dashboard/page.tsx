@@ -2,6 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import { formatCity } from '../format-city';
+import { getOperatorHeaders } from '../operator';
+import {
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+} from 'recharts';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
@@ -24,8 +33,11 @@ type Metrics = {
       delivered: number;
       canceled: number;
       unavailable: number;
+      open_tickets: number;
+      closed_tickets: number;
     };
     by_status: Array<{ status: string; count: number }>;
+    by_ticket_status: Array<{ status: 'open' | 'closed'; count: number }>;
     by_city: Array<{ city: string; state: string; orders: number; customers: number }>;
   };
 };
@@ -40,6 +52,14 @@ const STATUS_LABELS: Record<string, string> = {
   shipped: 'Enviados',
   unavailable: 'Indisponíveis',
 };
+const TICKET_STATUS_LABELS: Record<string, string> = {
+  open: 'Abertos',
+  closed: 'Fechados',
+};
+const TICKET_STATUS_COLORS: Record<string, string> = {
+  open: '#22c55e',
+  closed: '#60a5fa',
+};
 
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -49,7 +69,9 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
-        const response = await fetch(`${API_BASE}/metrics`);
+        const response = await fetch(`${API_BASE}/metrics`, {
+          headers: getOperatorHeaders(),
+        });
         if (!response.ok) {
           throw new Error(
             response.status === 404
@@ -160,9 +182,53 @@ export default function DashboardPage() {
           <span>Indisponíveis</span>
           <strong>{metrics.orders.summary.unavailable.toLocaleString('pt-BR')}</strong>
         </div>
+        <div className="stat-card">
+          <span>Tickets abertos</span>
+          <strong>{metrics.orders.summary.open_tickets.toLocaleString('pt-BR')}</strong>
+        </div>
+        <div className="stat-card">
+          <span>Tickets fechados</span>
+          <strong>{metrics.orders.summary.closed_tickets.toLocaleString('pt-BR')}</strong>
+        </div>
       </section>
 
       <section className="panel-grid">
+        <div className="panel chart-panel">
+          <h2>Tickets abertos e fechados</h2>
+          <div className="chart-container" role="img" aria-label="Distribuição de tickets abertos e fechados">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={metrics.orders.by_ticket_status}
+                  dataKey="count"
+                  nameKey="status"
+                  cx="50%"
+                  cy="48%"
+                  innerRadius={65}
+                  outerRadius={105}
+                  paddingAngle={4}
+                  stroke="none"
+                >
+                  {metrics.orders.by_ticket_status.map((item) => (
+                    <Cell key={item.status} fill={TICKET_STATUS_COLORS[item.status]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value, name) => [
+                    Number(value ?? 0).toLocaleString('pt-BR'),
+                    TICKET_STATUS_LABELS[String(name)] ?? String(name),
+                  ]}
+                  contentStyle={{
+                    background: '#111827',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                    borderRadius: 10,
+                  }}
+                />
+                <Legend formatter={(value) => TICKET_STATUS_LABELS[value] ?? value} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
         <div className="panel">
           <h2>Avaliações por mês</h2>
           <ul>

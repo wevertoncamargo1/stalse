@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { formatCity } from '../../format-city';
+import { getOperatorHeaders, useOperatorName } from '../../operator';
 import Snackbar from '../../snackbar';
 
 const ORDER_STATUSES = [
@@ -24,6 +25,7 @@ type Ticket = {
   customer_city: string | null;
   customer_state: string | null;
   order_status: string;
+  status: 'open' | 'closed' | null;
   order_purchase_timestamp: string;
   order_approved_at: string | null;
   order_delivered_carrier_date: string | null;
@@ -108,6 +110,7 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ message: string; variant: 'success' | 'error' } | null>(null);
+  const operator = useOperatorName();
 
   useEffect(() => {
     let cancelled = false;
@@ -115,7 +118,9 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch(`${API_BASE}/tickets/${params.id}`);
+        const response = await fetch(`${API_BASE}/tickets/${params.id}`, {
+          headers: getOperatorHeaders(),
+        });
         if (!response.ok) {
           throw new Error(response.status === 404 ? 'Pedido não encontrado.' : 'Não foi possível carregar o pedido.');
         }
@@ -144,6 +149,10 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
     changes: Partial<Pick<Ticket, 'order_status' | 'priority'>>
   ) => {
     if (!ticket || updating) return;
+    if (!operator.trim()) {
+      setNotice({ message: 'Informe o operador antes de alterar o pedido.', variant: 'error' });
+      return;
+    }
     const previousTicket = ticket;
     setUpdating(true);
     setError(null);
@@ -152,7 +161,7 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
     try {
       const response = await fetch(`${API_BASE}/tickets/${ticket.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getOperatorHeaders() },
         body: JSON.stringify(changes),
       });
       if (!response.ok) {
@@ -229,6 +238,7 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
             {ticket.customer_unique_id && <p><strong>Cliente único:</strong> {ticket.customer_unique_id}</p>}
             <p><strong>Localização:</strong> {ticket.customer_city && ticket.customer_state ? `${formatCity(ticket.customer_city)}, ${ticket.customer_state}` : 'Não informada'}</p>
             <p><strong>Status do pedido:</strong> <span className="badge">{ORDER_STATUS_LABELS[ticket.order_status] ?? ticket.order_status}</span></p>
+            <p><strong>Status do ticket:</strong> <span className={`badge status-${ticket.status ?? 'open'}`}>{ticket.status === 'closed' ? 'Fechado' : 'Aberto'}</span></p>
             <p><strong>Data da compra:</strong> {formatDate(ticket.order_purchase_timestamp)}</p>
             <p><strong>Data de aprovação:</strong> {formatDate(ticket.order_approved_at)}</p>
           </div>
@@ -271,12 +281,13 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
         <div className="separator" />
         <h2>Atendimento</h2>
         <p className="field-help">O status do pedido é compartilhado com a coluna do kanban. A prioridade continua sendo uma informação interna.</p>
+        {!operator.trim() && <p className="field-help">Informe seu nome no campo Operador da barra superior para registrar alterações.</p>}
         <div className="ticket-fields">
           <label className="field-control">
             <strong>Status do pedido</strong>
             <select
               value={ticket.order_status}
-              disabled={updating}
+              disabled={updating || !operator.trim()}
               onChange={(event) => {
                 const value = event.target.value as (typeof ORDER_STATUSES)[number];
                 void updateTicket({ order_status: value });
@@ -293,7 +304,7 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
             <strong>Prioridade</strong>
             <select
               value={ticket.priority ?? ''}
-              disabled={updating}
+              disabled={updating || !operator.trim()}
               onChange={(event) => {
                 const value = event.target.value;
                 if (value === '') {

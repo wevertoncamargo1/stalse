@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { DragEvent, useEffect, useState } from 'react';
 import { formatCity } from '../format-city';
+import { getOperatorHeaders, useOperatorName } from '../operator';
 import Snackbar from '../snackbar';
 
 const STATUSES = [
@@ -26,6 +27,7 @@ type Ticket = {
   customer_city: string | null;
   customer_state: string | null;
   order_status: string;
+  status: 'open' | 'closed' | null;
   order_purchase_timestamp: string;
   product_categories: string | null;
   item_count: number | null;
@@ -102,6 +104,9 @@ export default function TicketsPage() {
     delivered: { tickets: [], total: 0 },
   });
   const [query, setQuery] = useState('');
+  const [ticketStatusFilter, setTicketStatusFilter] = useState<'all' | 'open' | 'closed'>('all');
+  const [priorityFilter, setPriorityFilter] = useState<'all' | 'low' | 'medium' | 'high' | 'none'>('all');
+  const operator = useOperatorName();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState<number | null>(null);
@@ -126,10 +131,13 @@ export default function TicketsPage() {
       setError(null);
       const params = new URLSearchParams({ per_column: String(PER_COLUMN) });
       if (query) params.set('q', query);
+      if (ticketStatusFilter !== 'all') params.set('ticket_status', ticketStatusFilter);
+      if (priorityFilter !== 'all') params.set('priority', priorityFilter);
 
       try {
         const response = await fetch(`${API_BASE}/tickets/board?${params}`, {
           signal: controller.signal,
+          headers: getOperatorHeaders(),
         });
         if (!response.ok) {
           throw new Error('Não foi possível carregar os pedidos. Verifique se a API está ativa.');
@@ -153,15 +161,23 @@ export default function TicketsPage() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query, refreshKey]);
+  }, [query, ticketStatusFilter, priorityFilter, refreshKey]);
 
   const loadMore = async (status: Status) => {
     const offset = columns[status].tickets.length;
     const params = new URLSearchParams({ limit: String(PER_COLUMN), offset: String(offset) });
     params.set('status', status);
     if (query) params.set('q', query);
+    if (ticketStatusFilter !== 'all') params.set('ticket_status', ticketStatusFilter);
+    if (priorityFilter !== 'all' && priorityFilter !== 'none') {
+      params.set('priority', priorityFilter);
+    } else if (priorityFilter === 'none') {
+      params.set('priority', 'none');
+    }
     try {
-      const response = await fetch(`${API_BASE}/tickets?${params}`);
+      const response = await fetch(`${API_BASE}/tickets?${params}`, {
+        headers: getOperatorHeaders(),
+      });
       if (!response.ok) throw new Error('Não foi possível carregar mais pedidos.');
       const data: { tickets: Ticket[] } = await response.json();
       setColumns((current) => ({
@@ -195,6 +211,10 @@ export default function TicketsPage() {
   };
 
   const moveTicket = async (ticket: Ticket, nextStatus: Status) => {
+    if (!operator.trim()) {
+      setNotice({ message: 'Informe o operador antes de alterar um pedido.', variant: 'error' });
+      return;
+    }
     const previousStatus = ticket.order_status as Status;
     if (previousStatus === nextStatus || busyTickets.includes(ticket.id)) return;
     const updatedTicket = {
@@ -224,7 +244,7 @@ export default function TicketsPage() {
     try {
       const response = await fetch(`${API_BASE}/tickets/${ticket.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getOperatorHeaders() },
         body: JSON.stringify({ order_status: nextStatus }),
       });
       if (!response.ok) throw new Error('Não foi possível atualizar o status do pedido.');
@@ -308,6 +328,34 @@ export default function TicketsPage() {
         </div>
         {loading && <span className="searching-indicator" role="status">Buscando…</span>}
       </div>
+      <div className="ticket-filters" aria-label="Filtros dos pedidos">
+        <label>
+          Status do ticket
+          <select
+            aria-label="Filtrar por status do ticket"
+            onChange={(event) => setTicketStatusFilter(event.target.value as typeof ticketStatusFilter)}
+            value={ticketStatusFilter}
+          >
+            <option value="all">Todos os status</option>
+            <option value="open">Abertos</option>
+            <option value="closed">Fechados</option>
+          </select>
+        </label>
+        <label>
+          Prioridade
+          <select
+            aria-label="Filtrar por prioridade"
+            onChange={(event) => setPriorityFilter(event.target.value as typeof priorityFilter)}
+            value={priorityFilter}
+          >
+            <option value="all">Todas as prioridades</option>
+            <option value="high">Alta</option>
+            <option value="medium">Média</option>
+            <option value="low">Baixa</option>
+            <option value="none">Sem prioridade</option>
+          </select>
+        </label>
+      </div>
       <p className="board-help">
         {view === 'kanban'
           ? 'Arraste um card para outra coluna para atualizar o status do pedido. Clique em qualquer parte do card para ver os detalhes.'
@@ -349,7 +397,7 @@ export default function TicketsPage() {
                     href={`/tickets/${ticket.id}`}
                     className={`kanban-card${dragging === ticket.id ? ' is-dragging' : ''}${recentlyMoved.includes(ticket.id) ? ' is-moved' : ''}`}
                     key={ticket.id}
-                    draggable={!busyTickets.includes(ticket.id)}
+                    draggable={!busyTickets.includes(ticket.id) && Boolean(operator.trim())}
                     onDragStart={(event) => {
                       event.dataTransfer.setData('text/plain', String(ticket.id));
                       event.dataTransfer.effectAllowed = 'move';
@@ -364,6 +412,9 @@ export default function TicketsPage() {
                   >
                     <div className="kanban-card-top">
                       <strong>#{ticket.order_id.slice(0, 8)}</strong>
+                      <span className={`badge status-${ticket.status ?? 'open'}`}>
+                        {ticket.status === 'closed' ? 'Fechado' : 'Aberto'}
+                      </span>
                       {ticket.priority ? (
                         <span className={`badge priority-${ticket.priority}`}>
                           {ticket.priority === 'high' ? 'Alta' : ticket.priority === 'medium' ? 'Média' : 'Baixa'}
