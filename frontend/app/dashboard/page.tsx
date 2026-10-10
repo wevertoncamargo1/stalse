@@ -4,12 +4,19 @@ import { useEffect, useState } from 'react';
 import { formatCity } from '../format-city';
 import { getOperatorHeaders } from '../operator';
 import {
+  Bar,
+  BarChart,
+  CartesianGrid,
   Cell,
+  ComposedChart,
   Legend,
+  Line,
   Pie,
   PieChart,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -60,6 +67,19 @@ const TICKET_STATUS_COLORS: Record<string, string> = {
   open: '#22c55e',
   closed: '#60a5fa',
 };
+const CHART_GRID_COLOR = 'rgba(148, 163, 184, 0.18)';
+const CHART_TICK_COLOR = '#9ca3af';
+
+function formatMonth(value: string): string {
+  return new Date(`${value}-01T12:00:00`).toLocaleDateString('pt-BR', {
+    month: 'short',
+    year: '2-digit',
+  }).replace('.', '');
+}
+
+function formatCount(value: number | string): string {
+  return Number(value).toLocaleString('pt-BR');
+}
 
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -229,31 +249,65 @@ export default function DashboardPage() {
             </ResponsiveContainer>
           </div>
         </div>
-        <div className="panel">
+        <div className="panel chart-panel chart-panel-wide">
           <h2>Avaliações por mês</h2>
-          <ul>
-            {metrics.by_month.map((item) => (
-              <li key={item.month}>
-                <span>
-                  {new Date(`${item.month}-01T12:00:00`).toLocaleDateString('pt-BR', {
-                    month: 'long',
-                    year: 'numeric',
-                  })}
-                  <small className="metric-secondary">
-                    {item.count.toLocaleString('pt-BR')} avaliações
-                  </small>
-                </span>
-                <strong>
-                  {item.average_rating === null
-                    ? 'Média indisponível'
-                    : `Média ${item.average_rating.toLocaleString('pt-BR', {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })} / 5`}
-                </strong>
-              </li>
-            ))}
-          </ul>
+          <div className="chart-container chart-container-wide" role="img" aria-label="Quantidade mensal de avaliações e nota média">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={metrics.by_month} margin={{ top: 8, right: 4, bottom: 24, left: 0 }}>
+                <CartesianGrid stroke={CHART_GRID_COLOR} vertical={false} />
+                <XAxis
+                  dataKey="month"
+                  tickFormatter={formatMonth}
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                  interval="preserveStartEnd"
+                  angle={-30}
+                  textAnchor="end"
+                  height={48}
+                />
+                <YAxis
+                  yAxisId="reviews"
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                  tickFormatter={formatCount}
+                  width={46}
+                />
+                <YAxis
+                  yAxisId="rating"
+                  orientation="right"
+                  domain={[0, 5]}
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                  width={30}
+                />
+                <Tooltip
+                  labelFormatter={(label) => formatMonth(String(label))}
+                  formatter={(value, name) => [
+                    name === 'average_rating'
+                      ? `${Number(value ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / 5`
+                      : `${formatCount(Number(value ?? 0))} avaliações`,
+                    name === 'average_rating' ? 'Nota média' : 'Avaliações',
+                  ]}
+                  contentStyle={{
+                    background: '#111827',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                    borderRadius: 10,
+                  }}
+                />
+                <Legend
+                  formatter={(value) => value === 'average_rating' ? 'Nota média' : 'Avaliações'}
+                />
+                <Bar yAxisId="reviews" dataKey="count" fill="#60a5fa" radius={[4, 4, 0, 0]} />
+                <Line
+                  yAxisId="rating"
+                  dataKey="average_rating"
+                  name="average_rating"
+                  type="monotone"
+                  stroke="#fbbf24"
+                  strokeWidth={2}
+                  dot={false}
+                  connectNulls
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         {metrics.by_category.length > 0 && (
@@ -268,38 +322,120 @@ export default function DashboardPage() {
         )}
 
         {metrics.by_rating.length > 0 && (
-          <div className="panel">
+          <div className="panel chart-panel">
             <h2>Distribuição das notas</h2>
-            <ul>
-              {metrics.by_rating.map((item) => (
-                <li key={item.rating}><span>{item.rating} estrela(s)</span><strong>{item.count.toLocaleString('pt-BR')}</strong></li>
-              ))}
-            </ul>
+            <div className="chart-container chart-container-horizontal" role="img" aria-label="Quantidade de avaliações por nota">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={[...metrics.by_rating].sort((left, right) => Number(left.rating) - Number(right.rating))}
+                  layout="vertical"
+                  margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
+                >
+                  <CartesianGrid stroke={CHART_GRID_COLOR} horizontal={false} />
+                  <XAxis
+                    type="number"
+                    tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                    tickFormatter={formatCount}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="rating"
+                    tick={{ fill: CHART_TICK_COLOR, fontSize: 12 }}
+                    tickFormatter={(value) => `${value} estrela(s)`}
+                    width={86}
+                  />
+                  <Tooltip
+                    formatter={(value) => [`${formatCount(Number(value ?? 0))} avaliações`, 'Quantidade']}
+                    contentStyle={{
+                      background: '#111827',
+                      border: '1px solid rgba(148, 163, 184, 0.3)',
+                      borderRadius: 10,
+                    }}
+                  />
+                  <Bar dataKey="count" name="Avaliações" fill="#a78bfa" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         )}
 
-        <div className="panel">
+        <div className="panel chart-panel">
           <h2>Pedidos por status</h2>
-          <ul>
-            {metrics.orders.by_status.map((item) => (
-              <li key={item.status}>
-                <span>{STATUS_LABELS[item.status] ?? item.status}</span>
-                <strong>{item.count.toLocaleString('pt-BR')}</strong>
-              </li>
-            ))}
-          </ul>
+          <div className="chart-container chart-container-horizontal" role="img" aria-label="Quantidade de pedidos por status logístico">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={metrics.orders.by_status.map((item) => ({
+                  ...item,
+                  label: STATUS_LABELS[item.status] ?? item.status,
+                }))}
+                layout="vertical"
+                margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
+              >
+                <CartesianGrid stroke={CHART_GRID_COLOR} horizontal={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                  tickFormatter={formatCount}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="label"
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                  width={112}
+                />
+                <Tooltip
+                  formatter={(value) => [`${formatCount(Number(value ?? 0))} pedidos`, 'Quantidade']}
+                  contentStyle={{
+                    background: '#111827',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                    borderRadius: 10,
+                  }}
+                />
+                <Bar dataKey="count" name="Pedidos" fill="#38bdf8" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
-        <div className="panel">
+        <div className="panel chart-panel">
           <h2>Cidades com mais pedidos</h2>
-          <ul>
-            {metrics.orders.by_city.map((item) => (
-              <li key={`${item.city}-${item.state}`}>
-                <span>{formatCity(item.city)}, {item.state}<small className="metric-secondary">{item.customers.toLocaleString('pt-BR')} clientes</small></span>
-                <strong>{item.orders.toLocaleString('pt-BR')}</strong>
-              </li>
-            ))}
-          </ul>
+          <div className="chart-container chart-container-horizontal" role="img" aria-label="Dez cidades com maior quantidade de pedidos">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={metrics.orders.by_city.map((item) => ({
+                  ...item,
+                  label: `${formatCity(item.city)}, ${item.state}`,
+                }))}
+                layout="vertical"
+                margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
+              >
+                <CartesianGrid stroke={CHART_GRID_COLOR} horizontal={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
+                  tickFormatter={formatCount}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="label"
+                  tick={{ fill: CHART_TICK_COLOR, fontSize: 10 }}
+                  width={112}
+                />
+                <Tooltip
+                  formatter={(value, name, item) => [
+                    `${formatCount(Number(value ?? 0))} pedidos`,
+                    `${item.payload.label}${item.payload.customers ? ` (${formatCount(item.payload.customers)} clientes)` : ''}`,
+                  ]}
+                  contentStyle={{
+                    background: '#111827',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                    borderRadius: 10,
+                  }}
+                />
+                <Bar dataKey="orders" name="Pedidos" fill="#34d399" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
       </section>

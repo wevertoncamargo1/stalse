@@ -368,7 +368,7 @@ tbody td {
 
 .kanban-board {
   display: grid;
-  grid-template-columns: repeat(8, minmax(260px, 1fr));
+  grid-template-columns: repeat(8, minmax(280px, 1fr));
   gap: 16px;
   align-items: start;
   overflow-x: auto;
@@ -595,6 +595,7 @@ tbody td {
 
 .kanban-card {
   display: grid;
+  min-width: 0;
   gap: 10px;
   padding: 14px;
   color: var(--text);
@@ -673,13 +674,22 @@ tbody td {
 .kanban-card-top,
 .kanban-card-meta {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
 }
 
 .kanban-card-top > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--primary);
+}
+
+.kanban-card-meta > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .kanban-card p {
@@ -799,10 +809,22 @@ tbody td {
   min-width: 0;
 }
 
+.chart-panel-wide {
+  grid-column: span 2;
+}
+
 .chart-container {
   width: 100%;
   height: 290px;
   min-width: 0;
+}
+
+.chart-container-wide {
+  height: 340px;
+}
+
+.chart-container-horizontal {
+  height: 320px;
 }
 
 .panel ul {
@@ -862,6 +884,9 @@ tbody td {
     width: min(100%, 240px);
   }
   .chart-container { height: 260px; }
+  .chart-container-wide,
+  .chart-container-horizontal { height: 280px; }
+  .chart-panel-wide { grid-column: auto; }
   .view-switch { align-self: flex-start; }
   .kanban-board { grid-template-columns: repeat(8, minmax(250px, 1fr)); }
   .kanban-column { min-width: 250px; }

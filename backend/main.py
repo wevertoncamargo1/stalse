@@ -400,6 +400,12 @@ def create_schema(conn: DatabaseConnection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_orders_customer_location ON orders(customer_city, customer_state)"
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_customer_location_unique
+        ON orders(customer_city, customer_state, customer_unique_id)
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_order_reviews_order ON order_reviews(order_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_order_payments_order ON order_payments(order_id)")
@@ -509,6 +515,12 @@ def create_remote_schema(conn: turso_serverless.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_orders_city_search
         ON orders(customer_city_search)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_customer_location_unique
+        ON orders(customer_city, customer_state, customer_unique_id)
         """
     )
 
@@ -864,6 +876,12 @@ def ensure_remote_db() -> None:
     conn = get_remote_connection()
     try:
         create_activity_log_schema(conn)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_orders_customer_location_unique
+            ON orders(customer_city, customer_state, customer_unique_id)
+            """
+        )
         metadata = conn.execute(
             """
             SELECT key, value FROM dataset_metadata
@@ -1112,59 +1130,60 @@ def ticket_board(
     columns: dict[str, BoardColumn] = {
         status: {"tickets": [], "total": 0} for status in ORDER_STATUSES
     }
-    if REMOTE_DATABASE_ENABLED:
-        where_clause, parameters = ticket_filters(
-            q.strip(), ticket_status=ticket_status, priority=priority
-        )
-        rows = conn.execute(
-            f"""
-            WITH ranked_orders AS (
-                SELECT
-                    orders.*,
-                    COUNT(*) OVER (PARTITION BY order_status) AS _column_total,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY order_status
-                        ORDER BY
-                            CASE priority
-                                WHEN 'high' THEN 0
-                                WHEN 'medium' THEN 1
-                                WHEN 'low' THEN 2
-                                ELSE 3
-                            END,
-                            order_purchase_timestamp DESC,
-                            id DESC
-                    ) AS _column_rank
-                FROM orders
-                {where_clause}
+    if not REMOTE_DATABASE_ENABLED and not q.strip():
+        for status in ORDER_STATUSES:
+            tickets, total = ticket_page(
+                conn,
+                "",
+                status,
+                per_column,
+                0,
+                ticket_status,
+                priority,
             )
-            SELECT *
-            FROM ranked_orders
-            WHERE _column_rank <= ?
-            """,
-            (*parameters, per_column),
-        ).fetchall()
-        for row in rows:
-            ticket = serialize_order(row)
-            status = ticket["order_status"]
-            column_total = ticket.pop("_column_total")
-            ticket.pop("_column_rank")
-            column = columns[status]
-            column["tickets"].append(ticket)
-            column["total"] = column_total
+            columns[status] = {"tickets": tickets, "total": total}
         conn.close()
         return {"columns": columns, "per_column": per_column}
 
-    for status in ORDER_STATUSES:
-        tickets, total = ticket_page(
-            conn,
-            q.strip(),
-            status,
-            per_column,
-            0,
-            ticket_status,
-            priority,
+    where_clause, parameters = ticket_filters(
+        q.strip(), ticket_status=ticket_status, priority=priority
+    )
+    rows = conn.execute(
+        f"""
+        WITH ranked_orders AS (
+            SELECT
+                orders.*,
+                COUNT(*) OVER (PARTITION BY order_status) AS _column_total,
+                ROW_NUMBER() OVER (
+                    PARTITION BY order_status
+                    ORDER BY
+                        CASE priority
+                            WHEN 'high' THEN 0
+                            WHEN 'medium' THEN 1
+                            WHEN 'low' THEN 2
+                            ELSE 3
+                        END,
+                        order_purchase_timestamp DESC,
+                        id DESC
+                ) AS _column_rank
+            FROM orders
+            {where_clause}
         )
-        columns[status] = {"tickets": tickets, "total": total}
+        SELECT *
+        FROM ranked_orders
+        WHERE _column_rank <= ?
+        ORDER BY order_status, _column_rank
+        """,
+        (*parameters, per_column),
+    ).fetchall()
+    for row in rows:
+        ticket = serialize_order(row)
+        status = ticket["order_status"]
+        column_total = ticket.pop("_column_total")
+        ticket.pop("_column_rank")
+        column = columns[status]
+        column["tickets"].append(ticket)
+        column["total"] = column_total
     conn.close()
     return {"columns": columns, "per_column": per_column}
 
