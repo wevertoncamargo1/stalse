@@ -103,6 +103,8 @@ O workflow n8n exportado está em [n8n/workflow.json](./n8n/workflow.json). A ca
 
 Para produção, o frontend usa `NEXT_PUBLIC_API_URL`; a API pode usar `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN`, e `CORS_ORIGINS` define os domínios permitidos. A configuração Vercel não dá persistência ao arquivo JSONL; as alterações do ticket e logs operacionais são persistidos no banco remoto. O carregamento inicial no Turso é feito separadamente por `backend/seed_turso.py`.
 
+A Vercel hospeda o frontend e não executa o n8n. Para os alertas de fechamento e prioridade alta funcionarem em produção, publique o n8n em um endereço acessível pela API e configure `N8N_WEBHOOK_URL` no ambiente do backend com a URL HTTPS do webhook. O padrão `localhost:5678` serve apenas para desenvolvimento local; uma instância n8n local não pode ser acessada pela API hospedada na Vercel.
+
 ## Git Flow
 
 Crie `feature/*` a partir de `develop`, faça commits pequenos, integre a feature em `develop` após validar e promova `develop` para `main` quando estiver pronto para produção.
