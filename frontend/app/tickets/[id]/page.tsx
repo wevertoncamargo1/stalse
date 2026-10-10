@@ -174,7 +174,35 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
     }
   };
 
-  if (loading) return <main className="page-shell"><p>Carregando pedido...</p></main>;
+  if (loading) {
+    return (
+      <main className="page-shell" aria-busy="true" aria-label="Carregando pedido">
+        <header className="page-header">
+          <div>
+            <div className="skeleton-line skeleton-eyebrow" />
+            <div className="skeleton-line skeleton-heading" />
+          </div>
+          <div className="skeleton-line skeleton-button" />
+        </header>
+        <section className="ticket-card detail-skeleton" aria-hidden="true">
+          <div className="skeleton-line skeleton-section-title" />
+          <div className="ticket-grid">
+            {[0, 1].map((column) => (
+              <div className="skeleton-detail-column" key={column}>
+                {[0, 1, 2, 3, 4].map((line) => (
+                  <div className="skeleton-line skeleton-detail-line" key={line} />
+                ))}
+              </div>
+            ))}
+          </div>
+          <div className="separator" />
+          <div className="skeleton-line skeleton-section-title" />
+          <div className="skeleton-line skeleton-detail-line skeleton-detail-control" />
+          <div className="skeleton-line skeleton-detail-line skeleton-detail-control" />
+        </section>
+      </main>
+    );
+  }
   if (error && !ticket) {
     return <main className="page-shell"><p role="alert">{error}</p></main>;
   }

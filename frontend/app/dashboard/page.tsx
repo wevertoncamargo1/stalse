@@ -73,7 +73,32 @@ export default function DashboardPage() {
     fetchMetrics();
   }, []);
 
-  if (loading) return <main className="page-shell"><p>Carregando métricas...</p></main>;
+  if (loading) {
+    return (
+      <main className="page-shell" aria-busy="true" aria-label="Carregando métricas">
+        <div className="skeleton-line skeleton-eyebrow" />
+        <div className="skeleton-line skeleton-heading" />
+        <section className="stats-grid" aria-hidden="true">
+          {[0, 1].map((item) => (
+            <div className="stat-card skeleton-metric" key={item}>
+              <div className="skeleton-line skeleton-label" />
+              <div className="skeleton-line skeleton-value" />
+            </div>
+          ))}
+        </section>
+        <section className="panel-grid skeleton-metrics-panels" aria-hidden="true">
+          {[0, 1, 2, 3].map((item) => (
+            <div className="panel skeleton-panel" key={item}>
+              <div className="skeleton-line skeleton-panel-title" />
+              {[0, 1, 2, 3].map((line) => (
+                <div className="skeleton-line skeleton-panel-line" key={line} />
+              ))}
+            </div>
+          ))}
+        </section>
+      </main>
+    );
+  }
   if (error || !metrics) {
     return <main className="page-shell"><p>{error ?? 'Não foi possível carregar as métricas.'}</p></main>;
   }
