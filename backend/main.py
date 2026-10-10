@@ -36,6 +36,8 @@ CORS_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+if "https://stalse-web.vercel.app" not in CORS_ORIGINS:
+    CORS_ORIGINS.append("https://stalse-web.vercel.app")
 logger = logging.getLogger(__name__)
 DatabaseConnection = sqlite3.Connection | turso_serverless.Connection
 
