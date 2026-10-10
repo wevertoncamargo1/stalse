@@ -90,6 +90,7 @@ function sortByPriority(tickets: Ticket[]): Ticket[] {
 }
 
 export default function TicketsPage() {
+  const [view, setView] = useState<'kanban' | 'list'>('kanban');
   const [columns, setColumns] = useState<Record<Status, Column>>({
     created: { tickets: [], total: 0 },
     processing: { tickets: [], total: 0 },
@@ -108,7 +109,15 @@ export default function TicketsPage() {
   const [busyTickets, setBusyTickets] = useState<number[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [recentlyMoved, setRecentlyMoved] = useState<number[]>([]);
+  const [loadingMoreAll, setLoadingMoreAll] = useState(false);
   const [notice, setNotice] = useState<{ message: string; variant: 'success' | 'error' } | null>(null);
+  const hasLoadedTickets = STATUSES.some((status) => columns[status].tickets.length > 0);
+  const hasMoreTickets = STATUSES.some(
+    (status) => columns[status].tickets.length < columns[status].total
+  );
+  const ticketRows = STATUSES.flatMap((status) =>
+    columns[status].tickets.map((ticket) => ({ status, ticket }))
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -169,6 +178,19 @@ export default function TicketsPage() {
       }));
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : 'Erro ao carregar pedidos.');
+    }
+  };
+
+  const loadMoreAll = async () => {
+    if (loadingMoreAll) return;
+    setLoadingMoreAll(true);
+    try {
+      await Promise.all(
+        STATUSES.filter((status) => columns[status].tickets.length < columns[status].total)
+          .map((status) => loadMore(status))
+      );
+    } finally {
+      setLoadingMoreAll(false);
     }
   };
 
@@ -266,15 +288,35 @@ export default function TicketsPage() {
           placeholder="Buscar pedido, cliente, cidade (com ou sem acento) ou categoria..."
           aria-label="Buscar pedidos"
         />
-        {loading && <span className="searching-indicator">Buscando…</span>}
+        <div className="view-switch" role="group" aria-label="Visualização dos pedidos">
+          <button
+            type="button"
+            className={view === 'kanban' ? 'is-active' : ''}
+            aria-pressed={view === 'kanban'}
+            onClick={() => setView('kanban')}
+          >
+            Kanban
+          </button>
+          <button
+            type="button"
+            className={view === 'list' ? 'is-active' : ''}
+            aria-pressed={view === 'list'}
+            onClick={() => setView('list')}
+          >
+            Lista
+          </button>
+        </div>
+        {loading && <span className="searching-indicator" role="status">Buscando…</span>}
       </div>
       <p className="board-help">
-        Arraste um card para outra coluna para atualizar o status do pedido. Clique em qualquer
-        parte do card para ver os detalhes.
+        {view === 'kanban'
+          ? 'Arraste um card para outra coluna para atualizar o status do pedido. Clique em qualquer parte do card para ver os detalhes.'
+          : 'Clique em um pedido para abrir os detalhes. Os pedidos são exibidos por status e prioridade.'}
       </p>
       {error && <p role="alert">{error}</p>}
 
-      <section className="kanban-board" aria-label="Pedidos por status">
+      {view === 'kanban' && (
+      <section className="kanban-board" aria-label="Pedidos por status" aria-busy={loading}>
         {STATUSES.map((status) => {
           const column = columns[status];
           return (
@@ -297,6 +339,11 @@ export default function TicketsPage() {
                 <h2>{STATUS_LABELS[status]}</h2>
               </header>
               <div className="kanban-cards">
+                {loading && !hasLoadedTickets && (
+                  <div className="skeleton-stack" aria-hidden="true">
+                    {[0, 1, 2].map((item) => <div className="skeleton-card" key={item} />)}
+                  </div>
+                )}
                 {column.tickets.map((ticket) => (
                   <Link
                     href={`/tickets/${ticket.id}`}
@@ -354,6 +401,62 @@ export default function TicketsPage() {
           );
         })}
       </section>
+      )}
+
+      {view === 'list' && (
+        <section className="ticket-list" aria-label="Lista de pedidos" aria-busy={loading}>
+          <div className="ticket-list-header" aria-hidden="true">
+            <span>Pedido</span>
+            <span>Cliente</span>
+            <span>Status</span>
+            <span>Prioridade</span>
+            <span>Data da compra</span>
+            <span>Valor</span>
+          </div>
+          {loading && !hasLoadedTickets && (
+            <div className="ticket-list-skeleton" aria-hidden="true">
+              {[0, 1, 2, 3, 4, 5].map((item) => <div className="skeleton-row" key={item} />)}
+            </div>
+          )}
+          {ticketRows.map(({ ticket }) => (
+            <Link
+              href={`/tickets/${ticket.id}`}
+              className="ticket-list-row"
+              key={ticket.id}
+              aria-label={`Pedido ${ticket.order_id}, abrir detalhes`}
+            >
+              <span data-label="Pedido">#{ticket.order_id.slice(0, 8)}</span>
+              <span data-label="Cliente">
+                {ticket.customer_city && ticket.customer_state
+                  ? `${formatCity(ticket.customer_city)}, ${ticket.customer_state}`
+                  : `Cliente ${ticket.customer_unique_id?.slice(0, 8) ?? ticket.customer_id.slice(0, 8)}`}
+              </span>
+              <span data-label="Status">{ORDER_STATUS_LABELS[ticket.order_status] ?? ticket.order_status}</span>
+              <span data-label="Prioridade">
+                {ticket.priority ? (
+                  <span className={`badge priority-${ticket.priority}`}>
+                    {ticket.priority === 'high' ? 'Alta' : ticket.priority === 'medium' ? 'Média' : 'Baixa'}
+                  </span>
+                ) : 'Sem prioridade'}
+              </span>
+              <span data-label="Data da compra">{formatDate(ticket.order_purchase_timestamp)}</span>
+              <strong data-label="Valor">{formatCurrency(ticket.payment_total)}</strong>
+            </Link>
+          ))}
+          {!loading && !ticketRows.length && (
+            <p className="ticket-list-empty">Nenhum pedido encontrado.</p>
+          )}
+          {hasMoreTickets && (
+            <button
+              className="ticket-list-load-more"
+              onClick={() => void loadMoreAll()}
+              disabled={loadingMoreAll}
+            >
+              {loadingMoreAll ? 'Carregando…' : 'Carregar mais pedidos'}
+            </button>
+          )}
+        </section>
+      )}
       {notice && (
         <Snackbar
           key={`${notice.variant}-${notice.message}`}
