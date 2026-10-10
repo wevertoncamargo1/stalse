@@ -1,6 +1,7 @@
 import './globals.css';
 import Link from 'next/link';
 import type { Metadata } from 'next';
+import OperatorField from './operator-field';
 
 export const metadata: Metadata = {
   title: 'Atendimento Stalse',
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/tickets">Pedidos</Link>
             <Link href="/dashboard">Avaliações e métricas</Link>
           </div>
+          <OperatorField />
         </nav>
         {children}
       </body>
