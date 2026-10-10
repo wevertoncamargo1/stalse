@@ -1,245 +1,80 @@
-# Desafio Técnico Stalse
+# Stalse
 
-Este repositório contém um MVP full-stack para o desafio de suporte da Stalse.
+MVP de atendimento com pedidos do Olist, quadro Kanban e métricas de avaliações. O projeto roda localmente; Vercel e Turso são opcionais.
 
-## Stack
-- Python + FastAPI + SQLite
-- Next.js + App Router
-- Pipeline ETL com pandas
-- Automação com webhook do n8n
+## Rodar localmente
 
-## Estrutura do projeto
+Requisitos: Python 3.10+ e Node.js 18+.
 
-```text
-/backend
-  main.py
-  requirements.txt
-  db.sqlite        # gerado localmente
-/data
-  etl.py
-  raw/                     # CSVs selecionados do Kaggle (não versionados)
-  kaggle_notebook/          # código e metadados do kernel solicitado
-  processed/metrics.json    # gerado pelo ETL
-/frontend
-  app/...
-  package.json
-/n8n
-  workflow.json
-  screenshot.png
-README.md
-```
-
-## Backend
-
-Na primeira inicialização, o backend importa as tabelas selecionadas do Kaggle
-para o SQLite e prepara índices de busca. Essa carga inicial pode levar um
-pouco; as próximas inicializações reutilizam os dados processados.
-
-### Requisitos
-```bash
-cd backend
-python -m pip install -r requirements.txt
-```
-
-### Rodar localmente
-```bash
-cd backend
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### Endpoints disponíveis
-- GET /health
-- GET /tickets (busca com `q`, paginação com `limit` e `offset`)
-- GET /tickets/board (colunas e totais do kanban, busca com `q`)
-- GET /tickets/{id}
-- PATCH /tickets/{id} (atualiza status logístico/prioridade no SQLite)
-- GET /metrics
-
-### Exemplo de payload para PATCH
-```json
-{
-  "order_status": "delivered",
-  "priority": "high"
-}
-```
-
-## Dados e ETL
-
-O projeto usa tabelas relacionadas do [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce). `olist_order_reviews_dataset.csv` alimenta as métricas do dashboard. A área de atendimento usa `olist_orders_dataset.csv` e enriquece os pedidos, pelo `order_id`, com reviews, itens, produtos/categorias, pagamentos e localização do cliente. O kernel [Olist eCommerce-Analytics, Quasi Poisson+Poly Regs](https://www.kaggle.com/code/anshumoudgil/olist-ecommerce-analytics-quasi-poisson-poly-regs) foi baixado para `data/kaggle_notebook/` como referência.
-
-O Olist não fornece nome do cliente, canal de contato, texto de assunto do chamado nem prioridade. Mostramos o ID e a localização do cliente, categorias reais dos produtos e comentários reais das reviews quando disponíveis. Os nomes de cidades do CSV original vêm sem acentos; a interface restaura a grafia acentuada das cidades mais comuns e a busca funciona com ou sem acentos, sem alterar o texto original armazenado. Os códigos de status no backend e no SQLite permanecem em inglês. O status logístico do pedido é também o status usado no kanban e nas métricas; as colunas aparecem nesta ordem: Criados, Em processamento, Aprovados, Indisponíveis, Faturado, Enviados, Cancelados e Entregues. Arrastar um pedido entre colunas atualiza o status no SQLite. Para fins de demonstração, a prioridade é sorteada uma única vez na primeira inicialização que aplica essa migração, persistida no banco e exibida da maior para a menor dentro de cada coluna; ela não representa uma prioridade real do Olist. Uma avaliação só aparece dentro do detalhe do pedido quando o status é `delivered` (entregue).
-
-### Autenticar e baixar
-
-Instale a CLI oficial do Kaggle e autentique-se sem colocar tokens no repositório:
-
-```bash
-python -m pip install kaggle
-kaggle auth login
-```
-
-Baixe as tabelas utilizadas:
-
-```bash
-kaggle datasets download -d olistbr/brazilian-ecommerce -f olist_order_reviews_dataset.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/olist_order_reviews_dataset.csv.zip -DestinationPath data/raw
-kaggle datasets download -d olistbr/brazilian-ecommerce -f olist_orders_dataset.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/olist_orders_dataset.csv.zip -DestinationPath data/raw
-kaggle datasets download -d olistbr/brazilian-ecommerce -f olist_customers_dataset.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/olist_customers_dataset.csv.zip -DestinationPath data/raw
-kaggle datasets download -d olistbr/brazilian-ecommerce -f olist_order_items_dataset.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/olist_order_items_dataset.csv.zip -DestinationPath data/raw
-kaggle datasets download -d olistbr/brazilian-ecommerce -f olist_products_dataset.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/olist_products_dataset.csv.zip -DestinationPath data/raw
-kaggle datasets download -d olistbr/brazilian-ecommerce -f product_category_name_translation.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/product_category_name_translation.csv.zip -DestinationPath data/raw
-kaggle datasets download -d olistbr/brazilian-ecommerce -f olist_order_payments_dataset.csv -p data/raw
-Expand-Archive -LiteralPath data/raw/olist_order_payments_dataset.csv.zip -DestinationPath data/raw
-```
-
-Extraia todos os ZIPs antes de iniciar o backend. Na inicialização, o banco
-SQLite importa tabelas que ainda não tenham sido carregadas e aplica as
-migrações necessárias sem apagar os pedidos já existentes. Não apague
-`backend/db.sqlite`: isso também apagaria os dados locais. Migrações únicas
-removem os status preenchidos automaticamente nas versões anteriores e sorteiam
-uma prioridade baixa, média ou alta para cada pedido. O sorteio não se repete
-nas inicializações seguintes.
-
-No PowerShell, remova os ZIPs depois de extrair:
+1. Crie um ambiente Python e instale as dependências:
 
 ```powershell
-Remove-Item data/raw/*.zip
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r backend\requirements.txt
 ```
 
-Os CSVs e ZIPs estão no `.gitignore` e não serão enviados ao GitHub. O dataset tem licença **CC BY-NC-SA 4.0**; consulte os termos na página do Kaggle antes de redistribuí-lo ou usar os dados comercialmente.
+2. Configure o Kaggle CLI, autentique-se e baixe o dataset Olist:
 
-Ao iniciar, o backend importa e relaciona as tabelas no SQLite. A tela de pedidos é um kanban com uma coluna para cada status logístico original; arrastar um card altera o status do pedido e as métricas usam o mesmo campo. Uma confirmação temporária aparece em um Snackbar verde após sucesso ou vermelho se a atualização falhar. A busca é automática após 350 ms sem digitação. Os pedidos são carregados em lotes por coluna para manter a interface responsiva com o dataset completo.
-
-### Gerar métricas
-
-```bash
-python data/etl.py
+```powershell
+python -m pip install kaggle
+kaggle auth login
+New-Item -ItemType Directory -Force data\raw
+kaggle datasets download -d olistbr/brazilian-ecommerce -p data/raw --unzip
 ```
 
-O ETL usa as colunas `review_creation_date` e `review_score` para calcular o
-total de avaliações, a nota média, a distribuição de notas e, para cada mês,
-a quantidade de reviews e a nota média. O endpoint `GET /metrics` também acrescenta métricas reais de
-pedidos calculadas do SQLite: contagem por status logístico/kanban e as dez
-cidades com mais pedidos/clientes. Os agregados de review continuam usando
-somente a tabela de reviews; status e prioridade dos pedidos não são misturados
-às avaliações.
+O backend precisa dos CSVs de pedidos, clientes, itens, produtos, tradução de categorias, pagamentos e avaliações em `data/raw/`. O ETL lê `olist_order_reviews_dataset.csv`.
 
-Para usar outro caminho ou nomes de colunas diferentes:
+Dataset: [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce). Notebook de referência solicitado: [Olist eCommerce-Analytics, Quasi Poisson + Poly Regs](https://www.kaggle.com/code/anshumoudgil/olist-ecommerce-analytics-quasi-poisson-poly-regs). Respeite a licença e os termos de uso do Kaggle.
 
-```bash
-python data/etl.py --input "data/raw/meu_dataset.csv" --date-column "Review Date" --rating-column "Score"
+3. Gere as métricas e inicie a API:
+
+```powershell
+python data\etl.py
+python -m uvicorn main:app --app-dir backend --reload --port 8000
 ```
 
-O script processa o CSV com pandas e gera as métricas em
-`data/processed/metrics.json`, arquivo lido pelo endpoint `GET /metrics`.
-Datas, notas ou categorias inválidas são ignoradas e contabilizadas em um aviso.
+O SQLite é criado em `backend/db.sqlite`. Não apague esse arquivo se quiser preservar os status e prioridades editados localmente.
 
-## Frontend
+4. Em outro terminal, instale e inicie o frontend:
 
-### Requisitos
-```bash
+```powershell
 cd frontend
-npm install
-```
-
-### Rodar localmente
-```bash
-cd frontend
+npm ci
 npm run dev
 ```
 
-Depois abra:
-- http://localhost:3000/
-- http://localhost:3000/tickets
-- http://localhost:3000/dashboard
+Acesse [Pedidos](http://localhost:3000/tickets) e [Avaliações e métricas](http://localhost:3000/dashboard). Sem `NEXT_PUBLIC_API_URL`, o frontend usa `http://localhost:8000`.
 
-Na tela de pedidos, use os botões **Kanban** e **Lista** ao lado da busca para
-alternar a visualização. Ambas usam os mesmos dados, busca e prioridade; a lista
-carrega os próximos pedidos em lotes. Em telas menores, a lista reorganiza os
-dados em cartões e o Kanban mantém rolagem horizontal para preservar as colunas.
+## Dados e comportamento
 
-### Deploy na Vercel com banco remoto
+- As métricas de avaliações vêm de `olist_order_reviews_dataset.csv`; os dados de pedidos vêm de `olist_orders_dataset.csv`.
+- Clientes, itens, produtos, pagamentos e avaliações enriquecem os detalhes dos pedidos. O status do pedido alimenta as colunas do Kanban e as métricas de pedidos.
+- As colunas são Criados, Em processamento, Aprovados, Indisponíveis, Faturado, Enviados, Cancelados e Entregues. A prioridade é sorteada uma vez na inicialização do banco local e não representa um dado original do Olist.
+- Avaliações só aparecem nos detalhes de pedidos entregues. O dataset não fornece nome nem canal de contato do cliente.
 
-O projeto mantém SQLite em arquivo quando executado localmente, sem variáveis
-`TURSO_*`. Na Vercel, que executa funções sem disco persistente, a API usa um
-banco Turso remoto compatível com SQLite por HTTP; os pedidos e as métricas
-mensais são copiados para esse banco. A busca local continua usando FTS5; no
-banco remoto usa os mesmos campos com `LIKE`, pois a conexão HTTP não oferece a
-extensão FTS5 nem a função SQLite local de normalização.
+## Webhook n8n — integração em construção
 
-#### Preparar o banco remoto
+O backend já tem o envio HTTP esboçado via `N8N_WEBHOOK_URL` (padrão local: `http://localhost:5678/webhook/stalse-ticket`). O workflow em `n8n/workflow.json` ainda é um exemplo: seu destino HTTP atual é `httpbin.org/post`, não uma tarefa final do n8n.
 
-1. Crie uma base de dados Turso compatível com o driver Python `turso-serverless`
-   e gere um token de autenticação no painel do Turso.
-2. Garanta que o backend local já importou os CSVs e que
-   `data/processed/metrics.json` foi gerado.
-3. No PowerShell, informe as credenciais apenas para a sessão atual e execute a
-   carga inicial:
+Exemplo do payload enviado quando o status muda ou a prioridade passa para alta:
 
-```powershell
-$env:TURSO_DATABASE_URL = "URL fornecida pelo Turso"
-$env:TURSO_AUTH_TOKEN = "token fornecido pelo Turso"
-& .venv\Scripts\python.exe backend\seed_turso.py
-```
-
-A carga envia os pedidos já enriquecidos do SQLite local e o JSON agregado de
-avaliações; os CSVs e as credenciais não são enviados ao deploy. A operação
-recusa sobrescrever pedidos existentes. Para substituir explicitamente toda a
-base remota, inclusive status e prioridades editados, execute novamente com
-`--replace`.
-
-#### Criar os projetos Vercel
-
-Crie dois projetos Vercel conectados ao mesmo repositório Git:
-
-1. **Frontend:** defina `frontend` como **Root Directory**, mantenha o preset
-   Next.js e configure `NEXT_PUBLIC_API_URL` com a URL pública do projeto da API
-   (sem barra final).
-2. **API:** defina `backend` como **Root Directory**. A Vercel detecta o
-   `main.py` FastAPI e instala as dependências de `requirements.txt`. Configure
-   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` e `CORS_ORIGINS`; este último deve
-   conter a origem do frontend publicada, por exemplo
-   `https://seu-projeto.vercel.app`.
-3. Publique primeiro a API e depois configure e publique o frontend com a URL dela.
-
-Não configure os segredos em arquivos versionados. Para alterações no dataset,
-rode a carga remota a partir de uma cópia local com os CSVs e banco SQLite
-atualizados, usando `--replace` conscientemente. Confira também os limites do
-plano e o consumo do provedor de banco escolhido.
-
-### Git Flow
-
-O projeto usa `main` como baseline estável, `develop` para integração e branches
-`feature/*` para novas tarefas. A branch atual de trabalho é
-`feature/ticket-list-view`; após publicar o repositório remoto, abra um pull
-request dessa branch para `develop` e integre `develop` em `main` quando
-validado.
-
-## Workflow do n8n
-
-O arquivo `n8n/workflow.json` contém um webhook que recebe alterações nos status logísticos do pedido ou na prioridade e encaminha o payload para um endpoint HTTP.
-
-### Exemplo de payload do webhook
 ```json
 {
   "event": "ticket_updated",
   "ticket_id": 123,
   "order_id": "10a045cdf6a5650c21e9cfeb60384c16",
   "status": "delivered",
-  "priority": "low",
+  "priority": "high",
   "order_status": "delivered",
-  "updated_at": "2026-10-10T10:00:00"
+  "updated_at": "2026-10-10T13:00:00"
 }
 ```
 
-## Observações
+## Deploy opcional
 
-- A API está configurada para aceitar requisições do frontend local em `http://localhost:3000`.
-- O backend dispara o webhook do n8n quando o status do pedido muda ou quando a prioridade muda para `high`.
-- As métricas do dashboard continuam usando somente a tabela de reviews, conforme solicitado. As demais tabelas enriquecem os cards de pedidos, mas não alteram os agregados de avaliações.
-- Este é um MVP local e foi pensado para rodar sem deploy externo.
+Para Vercel, o frontend usa `NEXT_PUBLIC_API_URL`; o backend usa `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` e `CORS_ORIGINS`. Sem `TURSO_*`, a API usa o SQLite local. A carga de Turso é explícita e separada do fluxo local; veja `backend/seed_turso.py`.
+
+## Git Flow
+
+Use `feature/*` a partir de `develop`, faça commits pequenos, integre a feature em `develop` após validar e promova `develop` para `main` quando estiver pronto para produção.
