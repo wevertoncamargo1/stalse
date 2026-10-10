@@ -217,9 +217,10 @@ export default function TicketsPage() {
     }
     const previousStatus = ticket.order_status as Status;
     if (previousStatus === nextStatus || busyTickets.includes(ticket.id)) return;
-    const updatedTicket = {
+    const updatedTicket: Ticket = {
       ...ticket,
       order_status: nextStatus,
+      status: nextStatus === 'delivered' || nextStatus === 'canceled' ? 'closed' : 'open',
     };
     setBusyTickets((current) => [...current, ticket.id]);
     setError(null);

@@ -1,13 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { OPERATOR_CHANGE_EVENT, OPERATOR_STORAGE_KEY } from './operator';
+import {
+  initializeOperatorName,
+  OPERATOR_CHANGE_EVENT,
+  OPERATOR_STORAGE_KEY,
+} from './operator';
 
 export default function OperatorField() {
   const [operator, setOperator] = useState('');
 
   useEffect(() => {
-    setOperator(window.localStorage.getItem(OPERATOR_STORAGE_KEY) ?? '');
+    setOperator(initializeOperatorName());
   }, []);
 
   const updateOperator = (value: string) => {
