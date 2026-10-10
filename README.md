@@ -56,13 +56,14 @@ npm ci
 npm run dev
 ```
 
-Se a intenção for usar o webhook, inicie também n8n e Ollama e configure `N8N_WEBHOOK_URL` para `http://localhost:5678/webhook/stalse-ticket`. Importe e ative `n8n/workflow.json` uma vez no n8n e baixe o modelo com `ollama pull llama3.2:3b`. A configuração do operador fica no navegador; informe seu nome no campo **Operador** antes de alterar um pedido.
+Se a intenção for usar o webhook, inicie também n8n e Ollama e configure `N8N_WEBHOOK_URL` para `http://localhost:5678/webhook/stalse-ticket`. Importe e ative `n8n/workflow.json` uma vez no n8n e baixe o modelo com `ollama pull llama3.2:3b`.
 
 O SQLite local é criado em `backend/db.sqlite`; não o remova se quiser preservar as alterações. No primeiro início após esta versão, os tickets são inicializados como **fechados** para pedidos entregues/cancelados e **abertos** para os demais; todas as prioridades começam sem valor. Depois dessa migração única, status, prioridades e histórico persistem normalmente.
 
 ## Comportamento e auditoria
 
 - Os oito status logísticos do Olist seguem como colunas do Kanban. Eles são distintos do estado de atendimento do ticket: entregue ou cancelado significa **fechado**; os outros status significam **aberto**.
+- O campo **Operador** começa preenchido como **Operador local**, permitindo testar arraste e edições sem configuração adicional. É possível substituí-lo na barra superior; o nome é declarado pelo usuário e não representa autenticação.
 - O filtro de tickets permite combinar busca, estado aberto/fechado e prioridade. O backend mantém paginação e ordenação de prioridade.
 - `PATCH /tickets/{id}` registra operador, horário, status/prioridade anteriores e novos. A UI guarda o nome informado no `localStorage`; isso identifica o nome declarado pelo operador, não é autenticação de identidade.
 - Requisições às rotas de tickets/métricas e alterações são gravadas em `data/processed/activity.jsonl` e no banco. Ao fechar um ticket ou mudar a prioridade para alta, o backend envia ao n8n o evento e até 200 registros dos últimos 15 minutos.
