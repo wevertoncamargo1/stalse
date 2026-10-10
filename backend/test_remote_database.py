@@ -10,6 +10,9 @@ import seed_turso
 
 
 class RemoteDatabaseQueryTests(unittest.TestCase):
+    def test_production_frontend_origin_is_allowed(self) -> None:
+        self.assertIn("https://stalse-web.vercel.app", main.CORS_ORIGINS)
+
     def setUp(self) -> None:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
