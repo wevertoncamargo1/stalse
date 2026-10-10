@@ -12,5 +12,6 @@ backend/db.sqlite
 !.env.example
 data/raw/*.csv
 data/raw/*.zip
+data/processed/activity.jsonl
 .DS_Store
 npm-debug.log*

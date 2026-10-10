@@ -32,6 +32,8 @@ class RemoteDatabaseQueryTests(unittest.TestCase):
             ],
         )
         self.connection.commit()
+        main.initialize_ticket_lifecycle(self.connection)
+        self.connection.commit()
         self.remote_setting = main.REMOTE_DATABASE_ENABLED
         main.REMOTE_DATABASE_ENABLED = True
 
@@ -63,6 +65,40 @@ class RemoteDatabaseQueryTests(unittest.TestCase):
         self.assertEqual(total, 1)
         self.assertEqual([ticket["id"] for ticket in tickets], [3])
 
+    def test_ticket_filters_match_lifecycle_and_missing_priority(self) -> None:
+        tickets, total = main.ticket_page(
+            self.connection,
+            search_term="",
+            status=None,
+            limit=20,
+            offset=0,
+            ticket_status="open",
+            priority="none",
+        )
+
+        self.assertEqual(total, 1)
+        self.assertEqual([ticket["id"] for ticket in tickets], [3])
+
+    def test_ticket_lifecycle_is_initialized_once_and_priorities_are_empty(self) -> None:
+        lifecycle = {
+            row["id"]: (row["status"], row["priority"])
+            for row in self.connection.execute(
+                "SELECT id, status, priority FROM orders"
+            )
+        }
+        self.assertEqual(lifecycle[1], ("closed", None))
+        self.assertEqual(lifecycle[2], ("closed", None))
+        self.assertEqual(lifecycle[3], ("open", None))
+
+        self.connection.execute(
+            "UPDATE orders SET priority = 'high' WHERE id = 3"
+        )
+        main.initialize_ticket_lifecycle(self.connection)
+        retained = self.connection.execute(
+            "SELECT status, priority FROM orders WHERE id = 3"
+        ).fetchone()
+        self.assertEqual((retained["status"], retained["priority"]), ("open", "high"))
+
     def test_remote_board_returns_column_totals_and_priority_order(self) -> None:
         with patch.object(main, "get_connection", return_value=self.connection):
             result = main.ticket_board(q="", per_column=1)
@@ -73,6 +109,58 @@ class RemoteDatabaseQueryTests(unittest.TestCase):
         self.assertEqual([ticket["id"] for ticket in delivered["tickets"]], [1])
         self.assertEqual(processing["total"], 1)
         self.assertEqual(result["columns"]["canceled"]["total"], 0)
+
+    def test_remote_board_filters_by_ticket_status_and_priority(self) -> None:
+        with patch.object(main, "get_connection", return_value=self.connection):
+            result = main.ticket_board(
+                q="",
+                ticket_status="open",
+                priority="none",
+                per_column=20,
+            )
+
+        self.assertEqual(result["columns"]["processing"]["total"], 1)
+        self.assertEqual(result["columns"]["delivered"]["total"], 0)
+
+    def test_priority_high_update_records_operator_and_schedules_webhook(self) -> None:
+        background_tasks = main.BackgroundTasks()
+        with (
+            patch.object(main, "get_connection", return_value=self.connection),
+            patch.object(main, "append_activity_file"),
+            patch.object(
+                main, "insert_activity_row", wraps=main.insert_activity_row
+            ) as activity_writer,
+        ):
+            updated = main.patch_ticket(
+                3,
+                main.TicketPatch(priority="high"),
+                background_tasks,
+                operator="Alice",
+            )
+
+        self.assertEqual(updated["priority"], "high")
+        event = activity_writer.call_args.args[1]
+        self.assertEqual(event["actor"], "Alice")
+        self.assertEqual(event["event_type"], "ticket_updated")
+        self.assertEqual(event["details"]["changes"]["priority"]["to"], "high")
+        self.assertEqual(len(background_tasks.tasks), 1)
+        self.assertEqual(background_tasks.tasks[0].args[1:], ("Alice", ["priority_high"]))
+
+    def test_delivery_status_closes_ticket_and_schedules_webhook(self) -> None:
+        background_tasks = main.BackgroundTasks()
+        with (
+            patch.object(main, "get_connection", return_value=self.connection),
+            patch.object(main, "append_activity_file"),
+        ):
+            updated = main.patch_ticket(
+                3,
+                main.TicketPatch(order_status="delivered"),
+                background_tasks,
+                operator="Alice",
+            )
+
+        self.assertEqual((updated["status"], updated["order_status"]), ("closed", "delivered"))
+        self.assertEqual(background_tasks.tasks[0].args[2], ["ticket_closed"])
 
     def test_local_search_keeps_using_fts5(self) -> None:
         connection = sqlite3.connect(":memory:")
