@@ -38,7 +38,7 @@ Interface Avançada: Kanban e lista paginada em Next.js com Tailwind/Shadcn, est
 
 Auditoria e n8n: Alterações de status (PATCH /tickets/{id}) disparam eventos para o n8n e geram relatórios automatizados de auditoria integrados com IA local (Ollama / Llama 3.2).
 
-Deploy na Vercel: O frontend está online na Vercel.
+Deploy na Vercel: O frontend está online na Vercel. (https://stalse-web.vercel.app/tickets)
 Nota sobre o n8n em produção: Por limitações de infraestrutura gratuita na Vercel e custos de n8n Cloud, o webhook ativo e o processamento do n8n rodam nativamente via Docker Compose local ou conforme instruções do repositório.
 
 📂 Estrutura e Exemplo de Payload do Webhook
