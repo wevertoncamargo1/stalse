@@ -1,18 +1,56 @@
 {
-  "name": "Stalse Ticket Workflow",
+  "name": "Stalse - Auditoria inteligente de tickets",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "stalse-ticket",
-        "responseMode": "responseNode",
+        "responseMode": "onReceived",
         "options": {}
       },
-      "id": "webhook-node",
-      "name": "Webhook",
+      "id": "stalse-webhook",
+      "name": "Receber alerta do backend",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
-      "position": [260, 300]
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "stalse-ticket-audit"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst logs = Array.isArray(input.logs) ? input.logs : [];\nconst requests = logs.filter((log) => log.event_type === 'api_request');\nconst errors = requests.filter((log) => Number(log.status_code) >= 500);\nconst slowRequests = requests.filter((log) => Number(log.duration_ms) >= 3000);\nconst countsByActor = new Map();\nfor (const log of requests) {\n  const actor = log.actor || 'não identificado';\n  countsByActor.set(actor, (countsByActor.get(actor) || 0) + 1);\n}\nconst frequentActors = [...countsByActor.entries()]\n  .filter(([, count]) => count >= 20)\n  .map(([actor, count]) => `${actor}: ${count} requisições`);\nconst checks = [];\nif (errors.length >= 3) checks.push(`${errors.length} respostas HTTP 5xx na janela analisada`);\nif (slowRequests.length >= 3) checks.push(`${slowRequests.length} requisições com duração igual ou superior a 3 segundos`);\nchecks.push(...frequentActors.map((actor) => `Volume elevado de um operador (${actor})`));\nconst llmInput = {\n  window_minutes: input.logs_window_minutes,\n  ticket: {\n    id: input.ticket_id,\n    order_id: input.order_id,\n    actor: input.actor,\n    changed_at: input.updated_at,\n    triggers: input.triggers,\n    lifecycle_status: input.ticket_status,\n    order_status: input.order_status,\n    priority: input.priority\n  },\n  request_count: requests.length,\n  error_count: errors.length,\n  slow_request_count: slowRequests.length,\n  deterministic_checks: checks,\n  logs\n};\nreturn [{ json: { ...input, deterministic_checks: checks, llm_input: llmInput } }];"
+      },
+      "id": "analyze-logs",
+      "name": "Preparar sinais e janela de logs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { model: 'llama3.2:3b', stream: false, format: 'json', prompt: 'Analise os logs operacionais e o evento de ticket fornecidos. Identifique apenas sinais sustentados pelos dados: instabilidade/erros repetidos, latência elevada, pico de requisicoes de um operador e contexto da alteracao. Nao invente causas nem atribua culpa. Os limiares deterministas estao em deterministic_checks; considere-os evidencias, mas tambem relate anomalias observaveis nos logs. Responda somente JSON com as chaves incident_detected (boolean), severity (low|medium|high), summary (string), observations (array de strings). Dados: ' + JSON.stringify($json.llm_input) } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "ollama-analysis",
+      "name": "Avaliar logs com Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [710, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Preparar sinais e janela de logs').first().json;\nconst response = $input.first().json.response;\nif (typeof response !== 'string') {\n  throw new TypeError('O Ollama não retornou uma resposta JSON textual.');\n}\nconst assessment = JSON.parse(response);\nif (\n  typeof assessment.incident_detected !== 'boolean' ||\n  !['low', 'medium', 'high'].includes(assessment.severity) ||\n  typeof assessment.summary !== 'string' ||\n  !Array.isArray(assessment.observations) ||\n  !assessment.observations.every((item) => typeof item === 'string')\n) {\n  throw new TypeError('O LLM retornou um objeto fora do formato esperado.');\n}\nconst incidentDetected = base.deterministic_checks.length > 0 || assessment.incident_detected;\nreturn [{ json: { ...base, incident_detected: incidentDetected, assessment } }];"
+      },
+      "id": "validate-analysis",
+      "name": "Validar análise",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [950, 300]
     },
     {
       "parameters": {
@@ -25,122 +63,106 @@
           },
           "conditions": [
             {
-              "id": "status-created",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "created",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-processing",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "processing",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-approved",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "approved",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-unavailable",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "unavailable",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-invoiced",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "invoiced",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-shipped",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "shipped",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-canceled",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "canceled",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "status-delivered",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "delivered",
-              "operator": { "type": "string", "operation": "equals" }
-            },
-            {
-              "id": "priority-check",
-              "leftValue": "={{ $json.priority }}",
-              "rightValue": "high",
-              "operator": { "type": "string", "operation": "equals" }
+              "id": "incident-detected",
+              "leftValue": "={{ $json.incident_detected }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
           ],
-          "combinator": "or"
+          "combinator": "and"
         },
         "options": {}
       },
-      "id": "condition-node",
-      "name": "If valid order status or high priority",
+      "id": "incident-branch",
+      "name": "Há sinais de incidente?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [520, 300]
+      "typeVersion": 2.2,
+      "position": [1180, 300]
     },
     {
       "parameters": {
-        "url": "https://httpbin.org/post",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { event: 'ticket_updated', ticket_id: $json.ticket_id, order_id: $json.order_id, status: $json.status, priority: $json.priority, order_status: $json.order_status, updated_at: $json.updated_at } }}",
-        "options": {},
-        "headerParameters": {
-          "parameters": [{
-            "name": "Content-Type",
-            "value": "application/json"
-          }]
-        }
+        "jsCode": "const d = $input.first().json;\nconst safeOrderId = String(d.order_id || d.ticket_id).replace(/[^a-zA-Z0-9_-]/g, '_');\nconst safeTime = String(d.updated_at || new Date().toISOString()).replace(/[:.]/g, '-');\nconst fileName = `/reports/incidente-${safeOrderId}-${safeTime}.md`;\nconst observations = [...d.deterministic_checks, ...(d.assessment.observations || [])];\nconst report = `# Alerta de auditoria Stalse\\n\\n- **Pedido:** ${d.order_id}\\n- **Ticket:** ${d.ticket_id}\\n- **Operador:** ${d.actor || 'Não identificado'}\\n- **Alterado em:** ${d.updated_at}\\n- **Status do ticket:** ${d.ticket_status}\\n- **Status do pedido:** ${d.order_status}\\n- **Prioridade:** ${d.priority || 'Sem prioridade'}\\n- **Gatilhos:** ${(d.triggers || []).join(', ')}\\n- **Severidade sugerida:** ${d.assessment.severity || 'low'}\\n\\n## Resumo do LLM\\n\\n${d.assessment.summary}\\n\\n## Sinais observados\\n\\n${observations.length ? observations.map((item) => `- ${item}`).join('\\n') : '- Nenhum limiar determinista foi ultrapassado.'}\\n\\n## Contexto da janela\\n\\n${d.logs_window_minutes} minutos; ${d.logs?.length || 0} eventos operacionais anexados.\\n\\n> A análise automática é indicativa; confirme os eventos e métricas antes de tomar medidas.\\n`;\nreturn [{ json: { ...d, report_path: fileName }, binary: { data: { data: Buffer.from(report).toString('base64'), mimeType: 'text/markdown', fileName } } }];"
       },
-      "id": "http-request-node",
-      "name": "HTTP Request",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [780, 300]
+      "id": "incident-report",
+      "name": "Montar relatório de incidente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 190]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $json.report_path }}",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "write-incident-report",
+      "name": "Salvar relatório de incidente",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [1660, 190]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst safeOrderId = String(d.order_id || d.ticket_id).replace(/[^a-zA-Z0-9_-]/g, '_');\nconst safeTime = String(d.updated_at || new Date().toISOString()).replace(/[:.]/g, '-');\nconst fileName = `/reports/auditoria-${safeOrderId}-${safeTime}.md`;\nconst report = `# Auditoria de ticket Stalse\\n\\n- **Pedido:** ${d.order_id}\\n- **Ticket:** ${d.ticket_id}\\n- **Operador:** ${d.actor || 'Não identificado'}\\n- **Alterado em:** ${d.updated_at}\\n- **Status do ticket:** ${d.ticket_status}\\n- **Status do pedido:** ${d.order_status}\\n- **Prioridade:** ${d.priority || 'Sem prioridade'}\\n- **Gatilhos:** ${(d.triggers || []).join(', ')}\\n\\n## Avaliação operacional\\n\\n${d.assessment.summary}\\n\\n## Sinais observados\\n\\n${(d.assessment.observations || []).length ? d.assessment.observations.map((item) => `- ${item}`).join('\\n') : '- Não foram encontrados sinais relevantes na janela analisada.'}\\n\\n## Janela analisada\\n\\n${d.logs_window_minutes} minutos; ${d.logs?.length || 0} eventos operacionais anexados.\\n\\n> Resultado automático para triagem; não comprova causa nem atribui responsabilidade.\\n`;\nreturn [{ json: { ...d, report_path: fileName }, binary: { data: { data: Buffer.from(report).toString('base64'), mimeType: 'text/markdown', fileName } } }];"
+      },
+      "id": "normal-report",
+      "name": "Montar relatório de auditoria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 410]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $json.report_path }}",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "write-normal-report",
+      "name": "Salvar relatório de auditoria",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [1660, 410]
     }
   ],
   "connections": {
-    "webhook-node": {
+    "Receber alerta do backend": {
+      "main": [[{"node": "Preparar sinais e janela de logs", "type": "main", "index": 0}]]
+    },
+    "Preparar sinais e janela de logs": {
+      "main": [[{"node": "Avaliar logs com Ollama", "type": "main", "index": 0}]]
+    },
+    "Avaliar logs com Ollama": {
+      "main": [[{"node": "Validar análise", "type": "main", "index": 0}]]
+    },
+    "Validar análise": {
+      "main": [[{"node": "Há sinais de incidente?", "type": "main", "index": 0}]]
+    },
+    "Há sinais de incidente?": {
       "main": [
-        [
-          {
-            "node": "condition-node",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "Montar relatório de incidente", "type": "main", "index": 0}],
+        [{"node": "Montar relatório de auditoria", "type": "main", "index": 0}]
       ]
     },
-    "condition-node": {
-      "main": [
-        [
-          {
-            "node": "http-request-node",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        []
-      ]
+    "Montar relatório de incidente": {
+      "main": [[{"node": "Salvar relatório de incidente", "type": "main", "index": 0}]]
+    },
+    "Montar relatório de auditoria": {
+      "main": [[{"node": "Salvar relatório de auditoria", "type": "main", "index": 0}]]
     }
   },
-  "pinData": {},
+  "active": false,
   "settings": {
     "executionOrder": "v1"
   },
-  "staticData": null,
-  "tags": [{ "name": "stalse" }],
-  "triggerCount": 1,
-  "versionId": "1"
+  "versionId": "stalse-ticket-audit-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
 }
