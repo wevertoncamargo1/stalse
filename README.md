@@ -163,23 +163,62 @@ alternar a visualização. Ambas usam os mesmos dados, busca e prioridade; a lis
 carrega os próximos pedidos em lotes. Em telas menores, a lista reorganiza os
 dados em cartões e o Kanban mantém rolagem horizontal para preservar as colunas.
 
-### Deploy do frontend na Vercel
+### Deploy na Vercel com banco remoto
 
-O frontend pode ser publicado na Vercel separado da API:
+O projeto mantém SQLite em arquivo quando executado localmente, sem variáveis
+`TURSO_*`. Na Vercel, que executa funções sem disco persistente, a API usa um
+banco Turso remoto compatível com SQLite por HTTP; os pedidos e as métricas
+mensais são copiados para esse banco. A busca local continua usando FTS5; no
+banco remoto usa os mesmos campos com `LIKE`, pois a conexão HTTP não oferece a
+extensão FTS5 nem a função SQLite local de normalização.
 
-1. Importe o repositório na Vercel e defina `frontend` como **Root Directory**.
-2. Mantenha o preset **Next.js** e configure a variável de ambiente
-   `NEXT_PUBLIC_API_URL` com a URL pública da API FastAPI (sem barra final).
-3. Publique o projeto. A URL da Vercel deve ser incluída também em
-   `CORS_ORIGINS` no serviço que hospeda a API.
+#### Preparar o banco remoto
 
-A API não deve ser executada na Vercel nesta configuração: ela depende de SQLite
-gravável e dos arquivos CSV do Olist. Hospede-a em um serviço com disco
-persistente, configure `DATABASE_PATH` para um arquivo nesse disco e disponibilize
-os CSVs em `data/raw` antes da primeira inicialização. Configure
-`CORS_ORIGINS` como uma lista de origens separadas por vírgula, incluindo a URL
-de produção da Vercel; localmente, as origens localhost são permitidas por
-padrão. A API e os dados não são publicados pela configuração do frontend.
+1. Crie uma base de dados Turso compatível com o driver Python `turso-serverless`
+   e gere um token de autenticação no painel do Turso.
+2. Garanta que o backend local já importou os CSVs e que
+   `data/processed/metrics.json` foi gerado.
+3. No PowerShell, informe as credenciais apenas para a sessão atual e execute a
+   carga inicial:
+
+```powershell
+$env:TURSO_DATABASE_URL = "URL fornecida pelo Turso"
+$env:TURSO_AUTH_TOKEN = "token fornecido pelo Turso"
+& .venv\Scripts\python.exe backend\seed_turso.py
+```
+
+A carga envia os pedidos já enriquecidos do SQLite local e o JSON agregado de
+avaliações; os CSVs e as credenciais não são enviados ao deploy. A operação
+recusa sobrescrever pedidos existentes. Para substituir explicitamente toda a
+base remota, inclusive status e prioridades editados, execute novamente com
+`--replace`.
+
+#### Criar os projetos Vercel
+
+Crie dois projetos Vercel conectados ao mesmo repositório Git:
+
+1. **Frontend:** defina `frontend` como **Root Directory**, mantenha o preset
+   Next.js e configure `NEXT_PUBLIC_API_URL` com a URL pública do projeto da API
+   (sem barra final).
+2. **API:** defina `backend` como **Root Directory**. A Vercel detecta o
+   `main.py` FastAPI e instala as dependências de `requirements.txt`. Configure
+   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` e `CORS_ORIGINS`; este último deve
+   conter a origem do frontend publicada, por exemplo
+   `https://seu-projeto.vercel.app`.
+3. Publique primeiro a API e depois configure e publique o frontend com a URL dela.
+
+Não configure os segredos em arquivos versionados. Para alterações no dataset,
+rode a carga remota a partir de uma cópia local com os CSVs e banco SQLite
+atualizados, usando `--replace` conscientemente. Confira também os limites do
+plano e o consumo do provedor de banco escolhido.
+
+### Git Flow
+
+O projeto usa `main` como baseline estável, `develop` para integração e branches
+`feature/*` para novas tarefas. A branch atual de trabalho é
+`feature/ticket-list-view`; após publicar o repositório remoto, abra um pull
+request dessa branch para `develop` e integre `develop` em `main` quando
+validado.
 
 ## Workflow do n8n
 
