@@ -162,6 +162,62 @@ class RemoteDatabaseQueryTests(unittest.TestCase):
         self.assertEqual((updated["status"], updated["order_status"]), ("closed", "delivered"))
         self.assertEqual(background_tasks.tasks[0].args[2], ["ticket_closed"])
 
+    def test_patch_persists_status_and_priority_across_connections(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "tickets.sqlite"
+            setup_connection = sqlite3.connect(database_path)
+            setup_connection.row_factory = sqlite3.Row
+            main.create_remote_schema(setup_connection)
+            setup_connection.execute(
+                """
+                INSERT INTO orders (
+                    id, order_id, customer_id, order_status,
+                    order_purchase_timestamp, status
+                ) VALUES (1, 'order-1', 'customer-1', 'processing', '2018-01-01', 'open')
+                """
+            )
+            setup_connection.commit()
+            setup_connection.close()
+
+            def connect_to_database() -> sqlite3.Connection:
+                connection = sqlite3.connect(database_path)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            background_tasks = main.BackgroundTasks()
+            with (
+                patch.object(main, "REMOTE_DATABASE_ENABLED", True),
+                patch.object(main, "get_connection", side_effect=connect_to_database),
+                patch.object(main, "append_activity_file"),
+            ):
+                updated = main.patch_ticket(
+                    1,
+                    main.TicketPatch(order_status="delivered", priority="high"),
+                    background_tasks,
+                    operator="Alice",
+                )
+
+            verification_connection = connect_to_database()
+            try:
+                persisted = verification_connection.execute(
+                    "SELECT order_status, status, priority FROM orders WHERE id = 1"
+                ).fetchone()
+            finally:
+                verification_connection.close()
+
+        self.assertEqual(
+            (updated["order_status"], updated["status"], updated["priority"]),
+            ("delivered", "closed", "high"),
+        )
+        self.assertEqual(
+            (persisted["order_status"], persisted["status"], persisted["priority"]),
+            ("delivered", "closed", "high"),
+        )
+        self.assertEqual(
+            background_tasks.tasks[0].args[2],
+            ["ticket_closed", "priority_high"],
+        )
+
     def test_local_search_keeps_using_fts5(self) -> None:
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
@@ -187,11 +243,18 @@ class RemoteDatabaseQueryTests(unittest.TestCase):
                 limit=20,
                 offset=0,
             )
+            with patch.object(main, "get_connection", return_value=connection):
+                board = main.ticket_board(q="sao jose", per_column=20)
         finally:
             connection.close()
 
         self.assertEqual(total, 1)
         self.assertEqual([ticket["id"] for ticket in tickets], [1])
+        self.assertEqual(board["columns"]["delivered"]["total"], 1)
+        self.assertEqual(
+            [ticket["id"] for ticket in board["columns"]["delivered"]["tickets"]],
+            [1],
+        )
 
     def test_startup_uses_only_the_remote_database_when_configured(self) -> None:
         with (
