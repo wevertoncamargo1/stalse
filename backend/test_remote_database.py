@@ -314,6 +314,41 @@ class RemoteDatabaseSeedTests(unittest.TestCase):
         self.assertEqual(order["order_id"], "order-1")
         self.assertEqual(json.loads(metrics["value"]), {"reviews": []})
 
+    def test_metrics_only_seed_preserves_orders_and_seed_version(self) -> None:
+        self.remote.execute(
+            """
+            INSERT INTO orders (id, order_id, customer_id, order_status, order_purchase_timestamp)
+            VALUES (2, 'existing-order', 'customer-2', 'processing', '2018-01-02')
+            """
+        )
+        self.remote.execute(
+            """
+            INSERT INTO dataset_metadata (key, value)
+            VALUES ('remote_seed_version', 'existing-seed')
+            """
+        )
+        self.remote.commit()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metrics_file = Path(temp_dir) / "metrics.json"
+            metrics_file.write_text(
+                json.dumps({"by_day": [{"date": "2018-01-01", "ratings": []}]}),
+                encoding="utf-8",
+            )
+            with patch.object(seed_turso, "METRICS_FILE", metrics_file):
+                seed_turso._copy_review_metrics(self.remote)
+
+        orders = self.remote.execute("SELECT order_id FROM orders").fetchall()
+        metadata = dict(
+            self.remote.execute("SELECT key, value FROM dataset_metadata").fetchall()
+        )
+        self.assertEqual([order["order_id"] for order in orders], ["existing-order"])
+        self.assertEqual(metadata["remote_seed_version"], "existing-seed")
+        self.assertEqual(
+            json.loads(metadata["review_metrics"]),
+            {"by_day": [{"date": "2018-01-01", "ratings": []}]},
+        )
+
     def test_seed_refuses_to_overwrite_existing_orders_without_replace(self) -> None:
         self.remote.execute(
             """

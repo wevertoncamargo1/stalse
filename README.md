@@ -191,3 +191,18 @@ docker-compose.yml
 - **Login demo** (admin / admin). É só uma trava visual no front, sem segurança real.
 - Visual inspirado na identidade da Stalse
 - Frontend publicado na Vercel: https://stalse-web.vercel.app/tickets. O n8n roda apenas localmente via Docker.
+
+## Atualizar métricas no Turso
+
+O ETL local gera `data/processed/metrics.json`. Para enviar somente as métricas
+ao Turso, sem substituir os pedidos, configure `TURSO_DATABASE_URL` e
+`TURSO_AUTH_TOKEN` no ambiente e execute na raiz do projeto:
+
+```bash
+python data/etl.py
+python backend/seed_turso.py --metrics-only
+```
+
+`--replace` reenvia também os pedidos e deve ser usado apenas quando essa
+reposição completa for intencional. O Turso hospeda o banco, não o código FastAPI:
+alterações no backend ainda precisam ser publicadas no host que executa a API.

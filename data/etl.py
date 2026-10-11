@@ -267,56 +267,29 @@ def main() -> None:
     order_categories = (
         load_order_categories(args.input.parent) if order_column else None
     )
-    if selected_columns["category"]:
-        dataframe["__daily_category"] = dataframe["__category"]
-    elif order_categories is not None and order_column:
-        dataframe["__daily_category"] = dataframe[order_column].map(order_categories)
-    else:
-        dataframe["__daily_category"] = pd.NA
-    dataframe["__daily_category"] = dataframe["__daily_category"].fillna(
-        "Categoria não identificada"
-    )
-
     by_day: list[dict[str, object]] = []
     dated_reviews = dataframe.assign(
         __day=dataframe["__date"].dt.strftime("%Y-%m-%d")
     )
     for day, day_reviews in dated_reviews.groupby("__day", sort=True):
-        categories: list[dict[str, object]] = []
-        for category, category_reviews in day_reviews.groupby(
-            "__daily_category", sort=True
-        ):
-            category_metrics: dict[str, object] = {
-                "category": str(category),
-                "count": int(len(category_reviews)),
-            }
-            if selected_columns["rating"]:
-                category_metrics["average_rating"] = round(
-                    float(category_reviews["__rating"].mean()), 2
-                )
-                ratings = category_reviews["__rating"].value_counts().sort_index(
-                    ascending=False
-                )
-                category_metrics["ratings"] = [
-                    {
-                        "rating": (
-                            int(rating) if float(rating).is_integer() else float(rating)
-                        ),
-                        "count": int(rating_count),
-                    }
-                    for rating, rating_count in ratings.items()
-                ]
-            categories.append(category_metrics)
-        by_day.append(
-            {
-                "date": day,
-                "count": int(len(day_reviews)),
-                "categories": sorted(
-                    categories,
-                    key=lambda item: (-int(item["count"]), str(item["category"])),
-                ),
-            }
-        )
+        day_metrics: dict[str, object] = {
+            "date": day,
+            "count": int(len(day_reviews)),
+        }
+        if selected_columns["rating"]:
+            ratings = day_reviews["__rating"].value_counts().sort_index(
+                ascending=False
+            )
+            day_metrics["ratings"] = [
+                {
+                    "rating": (
+                        int(rating) if float(rating).is_integer() else float(rating)
+                    ),
+                    "count": int(rating_count),
+                }
+                for rating, rating_count in ratings.items()
+            ]
+        by_day.append(day_metrics)
     monthly_reviews = dataframe.assign(
         __month=dataframe["__date"].dt.strftime("%Y-%m")
     ).groupby("__month")

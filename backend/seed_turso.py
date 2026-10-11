@@ -17,16 +17,21 @@ from main import (
 BATCH_SIZE = 30
 
 
-def seed_remote_database(replace: bool) -> None:
+def seed_remote_database(replace: bool, metrics_only: bool = False) -> None:
     remote = get_remote_connection()
     try:
-        ensure_db()
         if not METRICS_FILE.is_file():
             raise RuntimeError(
                 f"Review metrics not found: {METRICS_FILE}. "
                 "Run `python data/etl.py` first."
             )
 
+        if metrics_only:
+            create_remote_schema(remote)
+            _copy_review_metrics(remote)
+            return
+
+        ensure_db()
         local = get_local_connection()
         try:
             _copy_local_orders(local, remote, replace)
@@ -87,33 +92,49 @@ def _copy_local_orders(
             print(f"Pedidos copiados para o banco remoto: {inserted}")
 
     remote.commit()
-    with METRICS_FILE.open("r", encoding="utf-8") as source_file:
-        metrics = json.load(source_file)
-    remote.executemany(
+    _copy_review_metrics(remote)
+    remote.execute(
         """
         INSERT INTO dataset_metadata (key, value) VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
-        [
-            ("review_metrics", json.dumps(metrics, ensure_ascii=False)),
-            ("remote_seed_version", REMOTE_DATASET_VERSION),
-        ],
+        ("remote_seed_version", REMOTE_DATASET_VERSION),
     )
     remote.commit()
     print(f"Carga concluída: {inserted} pedidos e métricas de avaliações.")
+
+
+def _copy_review_metrics(remote: turso_serverless.Connection) -> None:
+    with METRICS_FILE.open("r", encoding="utf-8") as source_file:
+        metrics = json.load(source_file)
+    remote.execute(
+        """
+        INSERT INTO dataset_metadata (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        ("review_metrics", json.dumps(metrics, ensure_ascii=False)),
+    )
+    remote.commit()
+    print("Métricas de avaliações atualizadas no banco remoto.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copia os pedidos e métricas locais para um banco Turso remoto."
     )
-    parser.add_argument(
+    seed_mode = parser.add_mutually_exclusive_group()
+    seed_mode.add_argument(
         "--replace",
         action="store_true",
         help="apaga os pedidos existentes no banco remoto antes da carga",
     )
+    seed_mode.add_argument(
+        "--metrics-only",
+        action="store_true",
+        help="atualiza apenas as métricas, sem modificar os pedidos existentes",
+    )
     args = parser.parse_args()
-    seed_remote_database(replace=args.replace)
+    seed_remote_database(replace=args.replace, metrics_only=args.metrics_only)
 
 
 if __name__ == "__main__":

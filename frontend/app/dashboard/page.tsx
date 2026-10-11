@@ -32,6 +32,7 @@ type Metrics = {
   by_day: Array<{
     date: string;
     count: number;
+    ratings?: Array<{ rating: number | string; count: number }> | null;
     categories?: Array<{
       category: string;
       count: number;
@@ -111,22 +112,24 @@ function DailyTooltip({
 }: TooltipContentProps) {
   const day = payload?.[0]?.payload as Metrics['by_day'][number] | undefined;
   if (!active || !day) return null;
+  const hasDailyRatings = Boolean(day.ratings?.length);
   const dayRatings = [5, 4, 3, 2, 1].map((rating) => ({
     rating,
-    count:
-      day.categories?.reduce(
-        (sum, category) =>
-          sum +
-          (category.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0),
-        0
-      ) ?? 0,
+    count: hasDailyRatings
+      ? day.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0
+      : day.categories?.reduce(
+          (sum, category) =>
+            sum +
+            (category.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0),
+          0
+        ) ?? 0,
   }));
 
   return (
     <div className="daily-tooltip">
       <strong className="daily-tooltip-date">{formatDay(day.date)}</strong>
       <p className="daily-tooltip-total">{count(day.count)} {day.count === 1 ? 'avaliação' : 'avaliações'}</p>
-      {day.categories?.some((category) => category.ratings?.length) ? (
+      {hasDailyRatings || day.categories?.some((category) => category.ratings?.length) ? (
         <ul className="rating-list daily-rating-list">
           {dayRatings.map((item) => (
             <li key={item.rating}>
