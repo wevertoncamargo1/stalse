@@ -218,134 +218,203 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
   if (!ticket) return <main className="page-shell"><p>Pedido não encontrado.</p></main>;
 
   return (
-    <main className="page-shell">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Pedido Olist</p>
-          <h1>{ticket.order_id}</h1>
+    <main className="page-shell detail-page">
+      <header className="detail-header">
+        <div className="detail-heading">
+          <p className="eyebrow">Detalhes do pedido</p>
+          <div className="detail-title-line">
+            <h1>Pedido <span>#{ticket.order_id}</span></h1>
+            <span className={`badge status-${ticket.status ?? 'open'}`}>
+              {ticket.status === 'closed' ? 'Ticket fechado' : 'Ticket aberto'}
+            </span>
+          </div>
+          <p className="detail-header-meta">
+            Compra em {formatDate(ticket.order_purchase_timestamp)}
+          </p>
         </div>
         <Link href="/tickets" className="secondary-button">
-          Voltar ao quadro
+          <span aria-hidden="true">←</span> Voltar ao quadro
         </Link>
       </header>
 
       {error && <p role="alert">{error}</p>}
-      <section className="ticket-card">
-        <h2>Dados do pedido</h2>
-        <div className="ticket-grid">
-          <div>
-            <p><strong>ID do cliente:</strong> {ticket.customer_id}</p>
-            {ticket.customer_unique_id && <p><strong>Cliente único:</strong> {ticket.customer_unique_id}</p>}
-            <p><strong>Localização:</strong> {ticket.customer_city && ticket.customer_state ? `${formatCity(ticket.customer_city)}, ${ticket.customer_state}` : 'Não informada'}</p>
-            <p><strong>Status do pedido:</strong> <span className="badge">{ORDER_STATUS_LABELS[ticket.order_status] ?? ticket.order_status}</span></p>
-            <p><strong>Status do ticket:</strong> <span className={`badge status-${ticket.status ?? 'open'}`}>{ticket.status === 'closed' ? 'Fechado' : 'Aberto'}</span></p>
-            <p><strong>Data da compra:</strong> {formatDate(ticket.order_purchase_timestamp)}</p>
-            <p><strong>Data de aprovação:</strong> {formatDate(ticket.order_approved_at)}</p>
-          </div>
-          <div>
-            <p><strong>Enviado à transportadora:</strong> {formatDate(ticket.order_delivered_carrier_date)}</p>
-            <p><strong>Entregue ao cliente:</strong> {formatDate(ticket.order_delivered_customer_date)}</p>
-            <p><strong>Previsão de entrega:</strong> {formatDate(ticket.order_estimated_delivery_date)}</p>
-            <p><strong>Categorias dos itens:</strong> {formatCategories(ticket.product_categories)}</p>
-            <p><strong>Quantidade de itens:</strong> {ticket.item_count ?? 'Não informada'}</p>
-            <p><strong>Valor dos itens:</strong> {formatCurrency(ticket.items_total)}</p>
-            <p><strong>Frete:</strong> {formatCurrency(ticket.freight_total)}</p>
-            <p><strong>Valor pago:</strong> {formatCurrency(ticket.payment_total)}</p>
-            <p><strong>Formas de pagamento:</strong> {formatPayments(ticket.payment_types)}</p>
-          </div>
-        </div>
-
-        {ticket.order_status === 'delivered' &&
-          (ticket.review_score !== null || ticket.review_comments) && (
-          <>
-            <div className="separator" />
-            <h2>Avaliação do pedido entregue</h2>
-            {ticket.review_score !== null && (
-              <div className="review-rating">
-                <span className="review-stars" aria-label={`${ticket.review_score.toFixed(1)} de 5 estrelas`}>
-                  {'★'.repeat(Math.round(ticket.review_score))}
-                  <span className="review-empty-stars">{'★'.repeat(5 - Math.round(ticket.review_score))}</span>
-                </span>
-                <strong>{ticket.review_score.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong>
-                <span className="review-count">
-                  {ticket.review_count && ticket.review_count > 1
-                    ? `Média de ${ticket.review_count} avaliações`
-                    : 'Avaliação do cliente'}
-                </span>
+      <div className="detail-layout">
+        <div className="detail-main">
+          <section className="detail-card customer-summary">
+            <div className="customer-identity">
+              <span className="customer-avatar" aria-hidden="true">O</span>
+              <div>
+                <span className="detail-overline">PERFIL DO CLIENTE</span>
+                <h2>Cliente Olist</h2>
+                <p>{ticket.customer_city && ticket.customer_state
+                  ? `${formatCity(ticket.customer_city)}, ${ticket.customer_state}`
+                  : 'Localização não informada'}</p>
               </div>
-            )}
-            {ticket.review_comments && <blockquote className="review-comment">{ticket.review_comments}</blockquote>}
-          </>
-        )}
+            </div>
+            <div className="customer-identifiers">
+              <div>
+                <span>ID do cliente</span>
+                <code>{ticket.customer_id}</code>
+              </div>
+              {ticket.customer_unique_id && (
+                <div>
+                  <span>Cliente recorrente</span>
+                  <code>{ticket.customer_unique_id}</code>
+                </div>
+              )}
+            </div>
+          </section>
 
-        <div className="separator" />
-        <h2>Atendimento</h2>
-        <p className="field-help">O status do pedido é compartilhado com a coluna do kanban. A prioridade continua sendo uma informação interna.</p>
-        {!operator.trim() && <p className="field-help">Informe seu nome no campo Operador do menu lateral para registrar alterações.</p>}
-        <div className="action-group">
-          <span className="action-label">Status do pedido</span>
-          <div className="chip-buttons" role="group" aria-label="Alterar status do pedido">
-            {ORDER_STATUSES.map((status) => (
-              <button
-                key={status}
-                type="button"
-                className={ticket.order_status === status ? 'is-active' : ''}
-                aria-pressed={ticket.order_status === status}
-                disabled={updating || !operator.trim() || ticket.order_status === status}
-                onClick={() => void updateTicket({ order_status: status })}
-              >
-                {ORDER_STATUS_LABELS[status]}
-              </button>
-            ))}
-          </div>
-          <div className="quick-actions">
-            {ticket.status === 'closed' ? (
-              <button
-                type="button"
-                className="ghost-button"
-                disabled={updating || !operator.trim()}
-                onClick={() => void updateTicket({ order_status: 'processing' })}
-              >
-                Reabrir ticket
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="primary-button"
-                disabled={updating || !operator.trim()}
-                onClick={() => void updateTicket({ order_status: 'delivered' })}
-              >
-                Fechar ticket (marcar como entregue)
-              </button>
+          <section className="detail-card">
+            <div className="detail-section-heading">
+              <div>
+                <span className="detail-overline">VISÃO GERAL</span>
+                <h2>Resumo do pedido</h2>
+              </div>
+              <span className="badge order-status-badge">
+                {ORDER_STATUS_LABELS[ticket.order_status] ?? ticket.order_status}
+              </span>
+            </div>
+            <div className="order-summary-grid">
+              <div className="order-summary-item">
+                <span>Itens no pedido</span>
+                <strong>{ticket.item_count ?? '—'}</strong>
+              </div>
+              <div className="order-summary-item">
+                <span>Valor dos itens</span>
+                <strong>{formatCurrency(ticket.items_total)}</strong>
+              </div>
+              <div className="order-summary-item order-summary-total">
+                <span>Total pago</span>
+                <strong>{formatCurrency(ticket.payment_total)}</strong>
+              </div>
+            </div>
+            <div className="order-info-row">
+              <span className="order-info-icon" aria-hidden="true">◇</span>
+              <div>
+                <span className="detail-overline">CATEGORIA</span>
+                <strong>{formatCategories(ticket.product_categories)}</strong>
+              </div>
+            </div>
+            <div className="order-info-row">
+              <span className="order-info-icon" aria-hidden="true">↗</span>
+              <div>
+                <span className="detail-overline">PAGAMENTO</span>
+                <strong>{formatPayments(ticket.payment_types)}</strong>
+                <small>Frete: {formatCurrency(ticket.freight_total)}</small>
+              </div>
+            </div>
+          </section>
+
+          {ticket.order_status === 'delivered' &&
+            (ticket.review_score !== null || ticket.review_comments) && (
+            <section className="detail-card review-card">
+              <div className="detail-section-heading">
+                <div>
+                  <span className="detail-overline">VOZ DO CLIENTE</span>
+                  <h2>Avaliação do pedido</h2>
+                </div>
+              </div>
+              {ticket.review_score !== null && (
+                <div className="review-rating">
+                  <span className="review-stars" aria-label={`${ticket.review_score.toFixed(1)} de 5 estrelas`}>
+                    {'★'.repeat(Math.round(ticket.review_score))}
+                    <span className="review-empty-stars">{'★'.repeat(5 - Math.round(ticket.review_score))}</span>
+                  </span>
+                  <strong>{ticket.review_score.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong>
+                  <span className="review-count">
+                    {ticket.review_count && ticket.review_count > 1
+                      ? `Média de ${ticket.review_count} avaliações`
+                      : 'Avaliação do cliente'}
+                  </span>
+                </div>
+              )}
+              {ticket.review_comments && <blockquote className="review-comment">{ticket.review_comments}</blockquote>}
+            </section>
+          )}
+        </div>
+
+        <aside className="detail-sidebar">
+          <section className="detail-card atendimento-card">
+            <div className="detail-section-heading">
+              <div>
+                <span className="detail-overline">GESTÃO INTERNA</span>
+                <h2>Atendimento</h2>
+              </div>
+              <span className={`badge status-${ticket.status ?? 'open'}`}>
+                {ticket.status === 'closed' ? 'Fechado' : 'Aberto'}
+              </span>
+            </div>
+            <p className="field-help">O status acompanha a coluna do quadro. A prioridade é interna.</p>
+            {!operator.trim() && <p className="field-help">Informe seu nome no menu lateral para registrar alterações.</p>}
+            <div className="action-group">
+              <span className="action-label">Status do pedido</span>
+              <div className="chip-buttons" role="group" aria-label="Alterar status do pedido">
+                {ORDER_STATUSES.map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    className={ticket.order_status === status ? 'is-active' : ''}
+                    aria-pressed={ticket.order_status === status}
+                    disabled={updating || !operator.trim() || ticket.order_status === status}
+                    onClick={() => void updateTicket({ order_status: status })}
+                  >
+                    {ORDER_STATUS_LABELS[status]}
+                  </button>
+                ))}
+              </div>
+              <div className="quick-actions">
+                {ticket.status === 'closed' ? (
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={updating || !operator.trim()}
+                    onClick={() => void updateTicket({ order_status: 'processing' })}
+                  >
+                    Reabrir ticket
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={updating || !operator.trim()}
+                    onClick={() => void updateTicket({ order_status: 'delivered' })}
+                  >
+                    Fechar ticket (marcar como entregue)
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="action-group">
+              <span className="action-label">Prioridade</span>
+              <div className="chip-buttons" role="group" aria-label="Alterar prioridade">
+                {([
+                  { value: null, label: 'Sem prioridade' },
+                  { value: 'low', label: 'Baixa' },
+                  { value: 'medium', label: 'Média' },
+                  { value: 'high', label: 'Alta' },
+                ] as const).map((option) => (
+                  <button
+                    key={option.label}
+                    type="button"
+                    className={`${ticket.priority === option.value ? 'is-active' : ''} chip-${option.value ?? 'none'}`}
+                    aria-pressed={ticket.priority === option.value}
+                    disabled={updating || !operator.trim() || ticket.priority === option.value}
+                    onClick={() => void updateTicket({ priority: option.value })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="field-help">Fechar o ticket ou marcar prioridade alta dispara a auditoria.</p>
+            </div>
+            {updating && <p className="save-status">Salvando alteração…</p>}
+            {ticket.updated_at && (
+              <p className="detail-updated"><strong>Última atualização</strong>{formatDate(ticket.updated_at)}</p>
             )}
-          </div>
-        </div>
-        <div className="action-group">
-          <span className="action-label">Prioridade</span>
-          <div className="chip-buttons" role="group" aria-label="Alterar prioridade">
-            {([
-              { value: null, label: 'Sem prioridade' },
-              { value: 'low', label: 'Baixa' },
-              { value: 'medium', label: 'Média' },
-              { value: 'high', label: 'Alta' },
-            ] as const).map((option) => (
-              <button
-                key={option.label}
-                type="button"
-                className={`${ticket.priority === option.value ? 'is-active' : ''} chip-${option.value ?? 'none'}`}
-                aria-pressed={ticket.priority === option.value}
-                disabled={updating || !operator.trim() || ticket.priority === option.value}
-                onClick={() => void updateTicket({ priority: option.value })}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <p className="field-help">Fechar o ticket ou marcar prioridade alta dispara o webhook do n8n.</p>
-        </div>
-        {updating && <p className="save-status">Salvando alteração…</p>}
-        {ticket.updated_at && <p><strong>Última atualização:</strong> {formatDate(ticket.updated_at)}</p>}
-      </section>
+          </section>
+        </aside>
+      </div>
       {notice && (
         <Snackbar
           key={`${notice.variant}-${notice.message}`}
