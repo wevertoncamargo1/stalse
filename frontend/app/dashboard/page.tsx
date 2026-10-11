@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import {
   Area,
   Bar,
@@ -12,7 +13,6 @@ import {
   PieChart,
   ResponsiveContainer,
   Tooltip,
-  type TooltipContentProps,
   XAxis,
   YAxis,
 } from 'recharts';
@@ -106,30 +106,24 @@ const chartDataIndex = (value: number | string | null | undefined): number | nul
   return Number.isInteger(index) && index >= 0 ? index : null;
 };
 
-function DailyTooltip({
-  active,
-  payload,
-}: TooltipContentProps) {
-  const day = payload?.[0]?.payload as Metrics['by_day'][number] | undefined;
-  if (!active || !day) return null;
-  const hasDailyRatings = Boolean(day.ratings?.length);
+type DailyChartPoint = {
+  date: string;
+  count: number;
+  ratings: Array<{ rating: number; count: number }>;
+  average: number;
+};
+
+function DailyTooltip({ day }: { day: DailyChartPoint }) {
   const dayRatings = [5, 4, 3, 2, 1].map((rating) => ({
     rating,
-    count: hasDailyRatings
-      ? day.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0
-      : day.categories?.reduce(
-          (sum, category) =>
-            sum +
-            (category.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0),
-          0
-        ) ?? 0,
+    count: day.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0,
   }));
 
   return (
-    <div className="daily-tooltip">
+    <div className="daily-tooltip" role="status" aria-live="polite">
       <strong className="daily-tooltip-date">{formatDay(day.date)}</strong>
       <p className="daily-tooltip-total">{count(day.count)} {day.count === 1 ? 'avaliação' : 'avaliações'}</p>
-      {hasDailyRatings || day.categories?.some((category) => category.ratings?.length) ? (
+      {day.ratings.length ? (
         <ul className="rating-list daily-rating-list">
           {dayRatings.map((item) => (
             <li key={item.rating}>
@@ -149,6 +143,207 @@ function DailyTooltip({
         </ul>
       ) : (
         <p className="daily-tooltip-unavailable">Distribuição por nota indisponível.</p>
+      )}
+    </div>
+  );
+}
+
+function DailyReviewsChart({ data }: { data: DailyChartPoint[] }) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ left: 8, top: 8 });
+  const chartRef = useRef<HTMLDivElement>(null);
+  const viewWidth = 720;
+  const viewHeight = 260;
+  const margin = { top: 8, right: 10, bottom: 30, left: 52 };
+  const plotWidth = viewWidth - margin.left - margin.right;
+  const plotHeight = viewHeight - margin.top - margin.bottom;
+
+  const geometry = useMemo(() => {
+    const maximum = Math.max(1, ...data.map((item) => item.count));
+    const step = Math.max(1, Math.ceil(maximum / 4));
+    const domainMaximum = step * 4;
+    const x = (index: number) =>
+      margin.left + ((index + 0.5) / Math.max(data.length, 1)) * plotWidth;
+    const y = (value: number) =>
+      margin.top + plotHeight * (1 - value / domainMaximum);
+    const barWidth = Math.min(8, Math.max(0.7, (plotWidth / Math.max(data.length, 1)) * 0.75));
+    const points = data.map((item, index) => ({
+      x: x(index),
+      averageY: y(item.average),
+      barTop: y(item.count),
+    }));
+    const bars = points
+      .map((point) => {
+        const left = point.x - barWidth / 2;
+        return `M${left.toFixed(2)} ${point.barTop.toFixed(2)}v${(margin.top + plotHeight - point.barTop).toFixed(2)}h${barWidth.toFixed(2)}z`;
+      })
+      .join('');
+    const averageLine = points
+      .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.averageY.toFixed(2)}`)
+      .join('');
+    const averageArea = points.length
+      ? `${averageLine}L${points[points.length - 1].x.toFixed(2)} ${(margin.top + plotHeight).toFixed(2)}L${points[0].x.toFixed(2)} ${(margin.top + plotHeight).toFixed(2)}Z`
+      : '';
+
+    let lastMonth = '';
+    let lastTickX = Number.NEGATIVE_INFINITY;
+    const months = data.flatMap((item, index) => {
+      const month = item.date.slice(0, 7);
+      const tickX = x(index);
+      if (month === lastMonth || tickX - lastTickX < 52) return [];
+      lastMonth = month;
+      lastTickX = tickX;
+      return [{ x: tickX, label: formatMonth(month) }];
+    });
+
+    return {
+      bars,
+      averageArea,
+      averageLine,
+      barWidth,
+      points,
+      months,
+      yTicks: [0, 1, 2, 3, 4].map((tick) => ({
+        y: y(step * tick),
+        label: count(step * tick),
+      })),
+    };
+  }, [data, margin.left, margin.top, plotHeight, plotWidth]);
+
+  const setActiveDay = (index: number, pointerX?: number, pointerY?: number) => {
+    if (!data.length) return;
+    const nextIndex = Math.min(data.length - 1, Math.max(0, index));
+    if (nextIndex === activeIndex) return;
+    setActiveIndex(nextIndex);
+    const bounds = chartRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const x = pointerX ?? ((geometry.points[nextIndex]?.x ?? margin.left) / viewWidth) * bounds.width;
+    const y = pointerY ?? 12;
+    const tooltipWidth = Math.min(340, bounds.width - 16);
+    const tooltipHeight = 170;
+    const left = x + tooltipWidth + 20 > bounds.width ? x - tooltipWidth - 12 : x + 12;
+    setTooltipPosition({
+      left: Math.max(8, Math.min(left, bounds.width - tooltipWidth - 8)),
+      top: Math.max(8, Math.min(y - 24, bounds.height - tooltipHeight - 8)),
+    });
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const chartX = ((event.clientX - bounds.left) / bounds.width) * viewWidth;
+    if (chartX < margin.left || chartX > margin.left + plotWidth) {
+      setActiveIndex(null);
+      return;
+    }
+    const index = Math.floor(((chartX - margin.left) / plotWidth) * data.length);
+    setActiveDay(index, event.clientX - bounds.left, event.clientY - bounds.top);
+  };
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!data.length) return;
+    let nextIndex: number | null = activeIndex;
+    if (event.key === 'ArrowRight') nextIndex = Math.min(data.length - 1, (activeIndex ?? -1) + 1);
+    else if (event.key === 'ArrowLeft') nextIndex = Math.max(0, (activeIndex ?? data.length) - 1);
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = data.length - 1;
+    else return;
+    event.preventDefault();
+    setActiveDay(nextIndex);
+  };
+
+  const activePoint = activeIndex === null ? null : geometry.points[activeIndex];
+  const activeDay = activeIndex === null ? null : data[activeIndex];
+  const baseline = margin.top + plotHeight;
+
+  return (
+    <div
+      ref={chartRef}
+      className="chart-box daily-chart-box"
+      role="group"
+      aria-label="Quantidade e categorias de avaliações por dia. Use as setas para navegar entre os dias."
+      tabIndex={0}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={() => setActiveIndex(null)}
+      onKeyDown={handleKeyDown}
+    >
+      <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="dayFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={ORANGE} stopOpacity={0.35} />
+            <stop offset="100%" stopColor={ORANGE} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        {geometry.yTicks.map((tick) => (
+          <g key={tick.label}>
+            <line
+              x1={margin.left}
+              x2={viewWidth - margin.right}
+              y1={tick.y}
+              y2={tick.y}
+              stroke={GRID}
+            />
+            <text x={margin.left - 8} y={tick.y + 4} textAnchor="end" fill={TICK.fill} fontSize={TICK.fontSize}>
+              {tick.label}
+            </text>
+          </g>
+        ))}
+        {geometry.months.map((month) => (
+          <text
+            key={month.label}
+            x={month.x}
+            y={viewHeight - 8}
+            textAnchor="middle"
+            fill={TICK.fill}
+            fontSize={TICK.fontSize}
+          >
+            {month.label}
+          </text>
+        ))}
+        <path d={geometry.bars} fill="#e2e8f0" fillOpacity={activeIndex === null ? 1 : 0.22} />
+        <path d={geometry.averageArea} fill="url(#dayFill)" fillOpacity={activeIndex === null ? 1 : 0.25} />
+        <path
+          d={geometry.averageLine}
+          fill="none"
+          stroke={ORANGE}
+          strokeWidth={2}
+          strokeOpacity={activeIndex === null ? 1 : 0.3}
+          vectorEffect="non-scaling-stroke"
+        />
+        {activePoint && (
+          <>
+            <line
+              x1={activePoint.x}
+              x2={activePoint.x}
+              y1={margin.top}
+              y2={baseline}
+              stroke={ORANGE}
+              strokeOpacity={0.25}
+              strokeDasharray="3 3"
+            />
+            <rect
+              x={activePoint.x - geometry.barWidth}
+              y={activePoint.barTop}
+              width={geometry.barWidth * 2}
+              height={Math.max(1, baseline - activePoint.barTop)}
+              rx={2}
+              fill={ORANGE}
+            />
+            <circle
+              cx={activePoint.x}
+              cy={activePoint.averageY}
+              r={4}
+              fill={ORANGE}
+              stroke="#fff"
+              strokeWidth={2}
+              vectorEffect="non-scaling-stroke"
+            />
+          </>
+        )}
+      </svg>
+      {activeDay && (
+        <div className="daily-tooltip-positioner" style={tooltipPosition}>
+          <DailyTooltip day={activeDay} />
+        </div>
       )}
     </div>
   );
@@ -204,7 +399,6 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeDayIndex, setActiveDayIndex] = useState<number | null>(null);
   const [activeMonthIndex, setActiveMonthIndex] = useState<number | null>(null);
 
   useEffect(() => {
@@ -242,8 +436,28 @@ export default function DashboardPage() {
     );
     const daily = metrics.by_day.map((item, index, all) => {
       const window = all.slice(Math.max(0, index - 6), index + 1);
+      const ratingCounts = new Map<number, number>();
+      if (item.ratings?.length) {
+        for (const rating of item.ratings) {
+          const score = Number(rating.rating);
+          ratingCounts.set(score, (ratingCounts.get(score) ?? 0) + rating.count);
+        }
+      } else {
+        for (const category of item.categories ?? []) {
+          for (const rating of category.ratings ?? []) {
+            const score = Number(rating.rating);
+            ratingCounts.set(score, (ratingCounts.get(score) ?? 0) + rating.count);
+          }
+        }
+      }
+      const dailyRatings: Array<{ rating: number; count: number }> = [];
+      ratingCounts.forEach((ratingCount, rating) => {
+        dailyRatings.push({ rating, count: ratingCount });
+      });
       return {
-        ...item,
+        date: item.date,
+        count: item.count,
+        ratings: dailyRatings,
         average: Math.round(window.reduce((sum, day) => sum + day.count, 0) / window.length),
       };
     });
@@ -355,64 +569,7 @@ export default function DashboardPage() {
               <span className="panel-chip">Pico: {count(peakDay.count)} em {formatDay(peakDay.date)}</span>
             )}
           </header>
-          <div className="chart-box" role="group" aria-label="Quantidade e categorias de avaliações por dia">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart
-                data={daily}
-                accessibilityLayer
-                margin={{ top: 6, right: 6, bottom: 0, left: -12 }}
-                onMouseMove={(state) => {
-                  const index = chartDataIndex(state.activeTooltipIndex);
-                  setActiveDayIndex(
-                    state.isTooltipActive ? index : null
-                  );
-                }}
-                onMouseLeave={() => setActiveDayIndex(null)}
-                onClick={(state) => {
-                  setActiveDayIndex(chartDataIndex(state.activeTooltipIndex));
-                }}
-              >
-                <defs>
-                  <linearGradient id="dayFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={ORANGE} stopOpacity={0.35} />
-                    <stop offset="100%" stopColor={ORANGE} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke={GRID} vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  tick={TICK}
-                  tickLine={false}
-                  axisLine={false}
-                  minTickGap={40}
-                  tickFormatter={(value: string) => formatMonth(value.slice(0, 7))}
-                />
-                <YAxis tick={TICK} tickLine={false} axisLine={false} tickFormatter={count} />
-                <Tooltip
-                  content={(props) => <DailyTooltip {...props} />}
-                  cursor={{ fill: '#fff4eb', opacity: 0.6 }}
-                />
-                <Bar dataKey="count" fill="#e2e8f0" maxBarSize={8}>
-                  {daily.map((day, index) => (
-                    <Cell
-                      key={day.date}
-                      fill={index === activeDayIndex ? ORANGE : '#e2e8f0'}
-                      fillOpacity={activeDayIndex === null || index === activeDayIndex ? 1 : 0.22}
-                    />
-                  ))}
-                </Bar>
-                <Area
-                  type="monotone"
-                  dataKey="average"
-                  stroke={ORANGE}
-                  strokeWidth={2}
-                  strokeOpacity={activeDayIndex === null ? 1 : 0.3}
-                  fill="url(#dayFill)"
-                  fillOpacity={activeDayIndex === null ? 1 : 0.25}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
+          <DailyReviewsChart data={daily} />
         </article>
 
         <article className="panel span-4">
