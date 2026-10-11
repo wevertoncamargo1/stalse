@@ -392,6 +392,16 @@ def create_schema(conn: DatabaseConnection) -> None:
     )
     conn.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_orders_priority_order
+        ON orders(
+            CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+            order_purchase_timestamp DESC,
+            id DESC
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_orders_lifecycle_priority
         ON orders(status, priority, order_purchase_timestamp DESC, id DESC)
         """
@@ -493,6 +503,27 @@ def create_remote_schema(conn: turso_serverless.Connection) -> None:
         """
     )
     create_activity_log_schema(conn)
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_board_priority
+        ON orders(
+            order_status,
+            CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+            order_purchase_timestamp DESC,
+            id DESC
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_orders_priority_order
+        ON orders(
+            CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+            order_purchase_timestamp DESC,
+            id DESC
+        )
+        """
+    )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_orders_purchase
@@ -878,6 +909,27 @@ def ensure_remote_db() -> None:
         create_activity_log_schema(conn)
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_orders_board_priority
+            ON orders(
+                order_status,
+                CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+                order_purchase_timestamp DESC,
+                id DESC
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_orders_priority_order
+            ON orders(
+                CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+                order_purchase_timestamp DESC,
+                id DESC
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_orders_customer_location_unique
             ON orders(customer_city, customer_state, customer_unique_id)
             """
@@ -908,6 +960,33 @@ def ensure_remote_db() -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+PRIORITY_RANK_SQL = (
+    "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END"
+)
+COUNT_CACHE_TTL_SECONDS = 60
+_count_cache: dict[tuple, tuple[float, int]] = {}
+_count_cache_lock = threading.Lock()
+
+
+def cached_count(key: tuple, compute) -> int:
+    now = time.monotonic()
+    with _count_cache_lock:
+        hit = _count_cache.get(key)
+        if hit and now - hit[0] < COUNT_CACHE_TTL_SECONDS:
+            return hit[1]
+    value = compute()
+    with _count_cache_lock:
+        if len(_count_cache) > 500:
+            _count_cache.clear()
+        _count_cache[key] = (now, value)
+    return value
+
+
+def invalidate_count_cache() -> None:
+    with _count_cache_lock:
+        _count_cache.clear()
 
 
 def serialize_order(row: sqlite3.Row | turso_serverless.Row) -> dict:
@@ -948,28 +1027,27 @@ def ticket_filters(
                 )
             else:
                 filters.append(
-                    """
-                    orders.id IN (
-                        SELECT rowid FROM orders_fts
-                        WHERE order_id LIKE ? OR customer_id LIKE ? OR order_status LIKE ?
-                           OR customer_unique_id LIKE ? OR customer_city_search LIKE ?
-                           OR customer_state LIKE ? OR product_categories LIKE ?
-                           OR review_comments LIKE ?
-                    )
-                    """
+                    "orders.id IN (SELECT rowid FROM orders_fts WHERE orders_fts MATCH ?)"
                 )
-            parameters.extend(
-                [
-                    f"%{search_term}%",
-                    f"%{search_term}%",
-                    f"%{search_term}%",
-                    f"%{search_term}%",
-                    f"%{normalized_city}%",
-                    f"%{search_term}%",
-                    f"%{search_term}%",
-                    f"%{search_term}%",
-                ]
-            )
+            if REMOTE_DATABASE_ENABLED:
+                parameters.extend(
+                    [
+                        f"%{search_term}%",
+                        f"%{search_term}%",
+                        f"%{search_term}%",
+                        f"%{search_term}%",
+                        f"%{normalized_city}%",
+                        f"%{search_term}%",
+                        f"%{search_term}%",
+                        f"%{search_term}%",
+                    ]
+                )
+            else:
+                fts_term = search_term.replace('"', '""')
+                fts_city = normalized_city.replace('"', '""')
+                parameters.append(
+                    f'"{fts_term}" OR customer_city_search : "{fts_city}"'
+                )
         else:
             filters.append(
                 """
@@ -995,37 +1073,21 @@ def ticket_page(
     where_clause, parameters = ticket_filters(
         search_term, status, ticket_status, priority
     )
-    if REMOTE_DATABASE_ENABLED:
-        rows = conn.execute(
-            f"""
-            SELECT orders.*, COUNT(*) OVER() AS _page_total
-            FROM orders
-            {where_clause}
-            ORDER BY
-                CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
-                order_purchase_timestamp DESC,
-                id DESC
-            LIMIT ? OFFSET ?
-            """,
-            (*parameters, limit, offset),
-        ).fetchall()
-        total = rows[0]["_page_total"] if rows else 0
-        tickets = []
-        for row in rows:
-            ticket = serialize_order(row)
-            ticket.pop("_page_total")
-            tickets.append(ticket)
-        return tickets, total
-
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM orders {where_clause}", tuple(parameters)
-    ).fetchone()[0]
+    count_key = (where_clause, tuple(parameters))
+    total = cached_count(
+        count_key,
+        lambda: conn.execute(
+            f"SELECT COUNT(*) FROM orders {where_clause}", tuple(parameters)
+        ).fetchone()[0],
+    )
+    if total == 0 or offset >= total:
+        return [], total
     rows = conn.execute(
         f"""
         SELECT * FROM orders
         {where_clause}
         ORDER BY
-            CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+            {PRIORITY_RANK_SQL},
             order_purchase_timestamp DESC,
             id DESC
         LIMIT ? OFFSET ?
@@ -1130,18 +1192,40 @@ def ticket_board(
     columns: dict[str, BoardColumn] = {
         status: {"tickets": [], "total": 0} for status in ORDER_STATUSES
     }
-    if not REMOTE_DATABASE_ENABLED and not q.strip():
-        for status in ORDER_STATUSES:
-            tickets, total = ticket_page(
-                conn,
-                "",
-                status,
-                per_column,
-                0,
-                ticket_status,
-                priority,
+    if not q.strip():
+        base_where, base_params = ticket_filters(
+            "", ticket_status=ticket_status, priority=priority
+        )
+        joiner = "AND" if base_where else "WHERE"
+        base_where = base_where or ""
+        totals_rows = conn.execute(
+            f"SELECT order_status, COUNT(*) AS n FROM orders {base_where} GROUP BY order_status",
+            tuple(base_params),
+        ).fetchall()
+        for row in totals_rows:
+            if row["order_status"] in columns:
+                columns[row["order_status"]]["total"] = row["n"]
+        union_parts = []
+        union_params: list = []
+        for index, status in enumerate(ORDER_STATUSES):
+            union_parts.append(
+                f"""
+                SELECT * FROM (
+                    SELECT orders.*, {index} AS _col FROM orders
+                    {base_where} {joiner} order_status = ?
+                    ORDER BY {PRIORITY_RANK_SQL}, order_purchase_timestamp DESC, id DESC
+                    LIMIT ?
+                )
+                """
             )
-            columns[status] = {"tickets": tickets, "total": total}
+            union_params.extend([*base_params, status, per_column])
+        rows = conn.execute(
+            " UNION ALL ".join(union_parts), tuple(union_params)
+        ).fetchall()
+        for row in rows:
+            ticket = serialize_order(row)
+            ticket.pop("_col")
+            columns[ticket["order_status"]]["tickets"].append(ticket)
         conn.close()
         return {"columns": columns, "per_column": per_column}
 
@@ -1270,6 +1354,7 @@ def patch_ticket(
     if status_changed or lifecycle_changed or priority_changed:
         insert_activity_row(conn, event_record)
     conn.commit()
+    invalidate_count_cache()
     conn.close()
     if status_changed or lifecycle_changed or priority_changed:
         append_activity_file(event_record)
