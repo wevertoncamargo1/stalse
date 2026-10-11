@@ -22,7 +22,7 @@ export default function OperatorField() {
 
   return (
     <label className="operator-field">
-      <span>Operador</span>
+      <span>Operador responsável</span>
       <input
         aria-label="Nome do operador para o histórico"
         autoComplete="name"

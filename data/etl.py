@@ -113,6 +113,29 @@ def normalize_priority(value: str) -> str:
     return normalized
 
 
+def load_order_categories(raw_dir: Path) -> pd.Series | None:
+    """Mapeia order_id -> categoria principal (item mais frequente do pedido).
+
+    Usa os CSVs auxiliares do dataset Olist quando estão em data/raw. Retorna
+    None se algum arquivo estiver ausente, para o ETL seguir sem categorias.
+    """
+    items_file = raw_dir / "olist_order_items_dataset.csv"
+    products_file = raw_dir / "olist_products_dataset.csv"
+    if not items_file.is_file() or not products_file.is_file():
+        return None
+    items = pd.read_csv(items_file, usecols=["order_id", "product_id"])
+    products = pd.read_csv(
+        products_file, usecols=["product_id", "product_category_name"]
+    )
+    merged = items.merge(products, on="product_id", how="left").dropna(
+        subset=["product_category_name"]
+    )
+    return (
+        merged.groupby("order_id")["product_category_name"]
+        .agg(lambda values: values.value_counts().index[0])
+    )
+
+
 def count_values(values: pd.Series, output_name: str) -> list[dict[str, str | int]]:
     counts = values.value_counts().rename_axis(output_name).reset_index(name="count")
     return counts.to_dict(orient="records")
@@ -259,11 +282,34 @@ def main() -> None:
         }
         for month, month_data in monthly_reviews
     ]
-    by_category = (
-        count_values(dataframe["__category"], "category")[:10]
-        if selected_columns["category"]
-        else []
-    )
+    if selected_columns["category"]:
+        by_category = count_values(dataframe["__category"], "category")[:10]
+    else:
+        by_category = []
+        order_column = next(
+            (column for column in dataframe.columns if normalize_name(column) == "order_id"),
+            None,
+        )
+        order_categories = load_order_categories(args.input.parent) if order_column else None
+        if order_categories is not None:
+            categories = dataframe[order_column].map(order_categories)
+            grouped = dataframe.assign(__category=categories).dropna(subset=["__category"])
+            grouped = grouped.groupby("__category")
+            by_category = sorted(
+                (
+                    {
+                        "category": category,
+                        "count": int(group["__date"].size),
+                        "average_rating": (
+                            round(float(group["__rating"].mean()), 2)
+                            if selected_columns["rating"]
+                            else None
+                        ),
+                    }
+                    for category, group in grouped
+                ),
+                key=lambda item: (-item["count"], item["category"]),
+            )[:10]
     by_rating = (
         count_values(dataframe["__rating"].astype(str), "rating")
         if selected_columns["rating"]

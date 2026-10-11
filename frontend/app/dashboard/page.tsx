@@ -1,15 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { formatCity } from '../format-city';
-import { getOperatorHeaders } from '../operator';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  Area,
   Bar,
-  BarChart,
   CartesianGrid,
   Cell,
   ComposedChart,
-  Legend,
   Line,
   Pie,
   PieChart,
@@ -18,11 +15,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { formatCity } from '../format-city';
+import { getOperatorHeaders } from '../operator';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 type Metrics = {
   generated_at: string;
+  source_file?: string;
   record_type: 'reviews' | 'records';
   summary: {
     total_records: number;
@@ -30,10 +30,8 @@ type Metrics = {
   };
   by_day: Array<{ date: string; count: number }>;
   by_month: Array<{ month: string; count: number; average_rating: number | null }>;
-  by_category: Array<{ category: string; count: number }>;
+  by_category: Array<{ category: string; count: number; average_rating?: number | null }>;
   by_rating: Array<{ rating: string; count: number }>;
-  by_status: Array<{ status: string; count: number }>;
-  by_priority: Array<{ priority: string; count: number }>;
   orders: {
     summary: {
       total_orders: number;
@@ -59,26 +57,84 @@ const STATUS_LABELS: Record<string, string> = {
   shipped: 'Enviados',
   unavailable: 'Indisponíveis',
 };
-const TICKET_STATUS_LABELS: Record<string, string> = {
-  open: 'Abertos',
-  closed: 'Fechados',
+const STATUS_COLORS: Record<string, string> = {
+  created: '#64748b',
+  processing: '#f59e0b',
+  approved: '#0ea5e9',
+  unavailable: '#a855f7',
+  invoiced: '#6366f1',
+  shipped: '#f27218',
+  canceled: '#dc2626',
+  delivered: '#16a34a',
 };
-const TICKET_STATUS_COLORS: Record<string, string> = {
-  open: '#22c55e',
-  closed: '#60a5fa',
+const RATING_COLORS: Record<string, string> = {
+  '5': '#16a34a',
+  '4': '#65a30d',
+  '3': '#f59e0b',
+  '2': '#f97316',
+  '1': '#dc2626',
 };
-const CHART_GRID_COLOR = 'rgba(148, 163, 184, 0.18)';
-const CHART_TICK_COLOR = '#9ca3af';
+const ORANGE = '#f27218';
+const INK = '#0b1220';
+const GRID = '#eef1f5';
+const TICK = { fill: '#64748b', fontSize: 11 };
+const TOOLTIP_STYLE = {
+  background: '#ffffff',
+  border: '1px solid #e2e8f0',
+  borderRadius: 10,
+  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
+  fontSize: 12,
+};
+
+const count = (value: number | string) => Number(value).toLocaleString('pt-BR');
+const percent = (part: number, total: number) =>
+  total ? `${((part / total) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%` : '0%';
+const humanize = (value: string) => value.replaceAll('_', ' ');
 
 function formatMonth(value: string): string {
-  return new Date(`${value}-01T12:00:00`).toLocaleDateString('pt-BR', {
-    month: 'short',
-    year: '2-digit',
-  }).replace('.', '');
+  return new Date(`${value}-01T12:00:00`)
+    .toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })
+    .replace('.', '');
 }
 
-function formatCount(value: number | string): string {
-  return Number(value).toLocaleString('pt-BR');
+function formatDay(value: string): string {
+  return new Date(`${value}T12:00:00`).toLocaleDateString('pt-BR');
+}
+
+function Stars({ value }: { value: number }) {
+  const full = Math.round(value);
+  return (
+    <span className="stars" aria-label={`${value.toLocaleString('pt-BR')} de 5 estrelas`}>
+      {'★'.repeat(full)}
+      <span>{'★'.repeat(5 - full)}</span>
+    </span>
+  );
+}
+
+function BarList({
+  rows,
+}: {
+  rows: Array<{ key: string; label: string; value: number; color?: string; meta?: string }>;
+}) {
+  const max = Math.max(...rows.map((row) => row.value), 1);
+  return (
+    <ul className="bar-list">
+      {rows.map((row) => (
+        <li key={row.key}>
+          <div className="bar-list-head">
+            <span className="bar-list-label">{row.label}</span>
+            <span className="bar-list-value">
+              {count(row.value)}
+              {row.meta && <small>{row.meta}</small>}
+            </span>
+          </div>
+          <div className="bar-list-track" aria-hidden="true">
+            <i style={{ width: `${Math.max(1.5, (row.value / max) * 100)}%`, background: row.color ?? ORANGE }} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export default function DashboardPage() {
@@ -89,355 +145,337 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
-        const response = await fetch(`${API_BASE}/metrics`, {
-          headers: getOperatorHeaders(),
-        });
+        const response = await fetch(`${API_BASE}/metrics`, { headers: getOperatorHeaders() });
         if (!response.ok) {
           throw new Error(
             response.status === 404
-              ? 'Métricas ainda não geradas. Coloque o arquivo de reviews do Olist em data/raw/olist_order_reviews_dataset.csv e execute o ETL.'
+              ? 'Métricas ainda não geradas. Rode `python data/etl.py` para criar data/processed/metrics.json.'
               : 'Não foi possível carregar as métricas.'
           );
         }
-        const data = await response.json();
-        setMetrics(data);
+        setMetrics(await response.json());
       } catch (fetchError) {
-        setError(
-          fetchError instanceof Error
-            ? fetchError.message
-            : 'Não foi possível carregar as métricas.'
-        );
+        setError(fetchError instanceof Error ? fetchError.message : 'Não foi possível carregar as métricas.');
       } finally {
         setLoading(false);
       }
     };
-
-    fetchMetrics();
+    void fetchMetrics();
   }, []);
+
+  const derived = useMemo(() => {
+    if (!metrics) return null;
+    const ratings = [...metrics.by_rating].sort((a, b) => Number(b.rating) - Number(a.rating));
+    const totalRatings = ratings.reduce((sum, item) => sum + item.count, 0);
+    const fiveStars = ratings.find((item) => Number(item.rating) === 5)?.count ?? 0;
+    const lowRatings = ratings
+      .filter((item) => Number(item.rating) <= 2)
+      .reduce((sum, item) => sum + item.count, 0);
+    const peakDay = metrics.by_day.reduce(
+      (best, item) => (item.count > best.count ? item : best),
+      { date: '', count: 0 }
+    );
+    const daily = metrics.by_day.map((item, index, all) => {
+      const window = all.slice(Math.max(0, index - 6), index + 1);
+      return {
+        ...item,
+        average: Math.round(window.reduce((sum, day) => sum + day.count, 0) / window.length),
+      };
+    });
+    const orderStatus = [...metrics.orders.by_status]
+      .filter((item) => item.count > 0)
+      .sort((a, b) => b.count - a.count);
+    return { ratings, totalRatings, fiveStars, lowRatings, peakDay, orderStatus, daily };
+  }, [metrics]);
 
   if (loading) {
     return (
       <main className="page-shell" aria-busy="true" aria-label="Carregando métricas">
         <div className="skeleton-line skeleton-eyebrow" />
         <div className="skeleton-line skeleton-heading" />
-        <section className="stats-grid" aria-hidden="true">
-          {[0, 1].map((item) => (
-            <div className="stat-card skeleton-metric" key={item}>
+        <section className="dash-kpis" aria-hidden="true">
+          {[0, 1, 2, 3].map((item) => (
+            <div className="dash-kpi skeleton-metric" key={item}>
               <div className="skeleton-line skeleton-label" />
               <div className="skeleton-line skeleton-value" />
             </div>
           ))}
         </section>
-        <section className="panel-grid skeleton-metrics-panels" aria-hidden="true">
-          {[0, 1, 2, 3].map((item) => (
-            <div className="panel skeleton-panel" key={item}>
+        <section className="dash-grid" aria-hidden="true">
+          {[0, 1, 2].map((item) => (
+            <div className={`panel skeleton-panel ${item === 0 ? 'span-8' : 'span-4'}`} key={item}>
               <div className="skeleton-line skeleton-panel-title" />
-              {[0, 1, 2, 3].map((line) => (
-                <div className="skeleton-line skeleton-panel-line" key={line} />
-              ))}
+              {[0, 1, 2, 3].map((line) => <div className="skeleton-line skeleton-panel-line" key={line} />)}
             </div>
           ))}
         </section>
       </main>
     );
   }
-  if (error || !metrics) {
-    return <main className="page-shell"><p>{error ?? 'Não foi possível carregar as métricas.'}</p></main>;
+
+  if (error || !metrics || !derived) {
+    return (
+      <main className="page-shell">
+        <p role="alert" className="inline-error">{error ?? 'Não foi possível carregar as métricas.'}</p>
+      </main>
+    );
   }
+
+  const { summary, orders } = metrics;
+  const { ratings, totalRatings, fiveStars, lowRatings, peakDay, orderStatus, daily } = derived;
+  const generatedAt = new Date(metrics.generated_at).toLocaleString('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
 
   return (
     <main className="page-shell">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Reviews do Olist</p>
-          <h1>Avaliações de clientes</h1>
+          <p className="eyebrow">Avaliações e métricas</p>
+          <h1>Visão geral da operação</h1>
+          <p className="page-subtitle">
+            Avaliações processadas pelo ETL em pandas e indicadores ao vivo dos pedidos.
+          </p>
+        </div>
+        <div className="data-source" title="Arquivo lido pelo endpoint GET /metrics">
+          <span className="data-source-dot" aria-hidden="true" />
+          <div>
+            <strong>metrics.json</strong>
+            <span>Gerado em {generatedAt}</span>
+          </div>
         </div>
       </header>
 
-      <section className="stats-grid">
-        <div className="stat-card">
-          <span>{metrics.record_type === 'reviews' ? 'Total de avaliações' : 'Total de registros'}</span>
-          <strong>{metrics.summary.total_records.toLocaleString('pt-BR')}</strong>
-        </div>
-        {metrics.summary.average_rating !== null && (
-          <div className="stat-card">
-            <span>Nota média</span>
-            <strong>{metrics.summary.average_rating.toLocaleString('pt-BR')}</strong>
+      <section className="dash-kpis" aria-label="Indicadores principais">
+        <article className="dash-kpi is-feature">
+          <span className="dash-kpi-label">Nota média</span>
+          <div className="dash-kpi-main">
+            <strong>{summary.average_rating?.toLocaleString('pt-BR') ?? '—'}</strong>
+            <small>/ 5</small>
           </div>
-        )}
-        {metrics.by_status.map((item) => (
-          <div className="stat-card" key={item.status}>
-            <span>Status: {item.status}</span>
-            <strong>{item.count.toLocaleString('pt-BR')}</strong>
-          </div>
-        ))}
-        {metrics.by_priority.map((item) => (
-          <div className="stat-card" key={item.priority}>
-            <span>Prioridade: {item.priority}</span>
-            <strong>{item.count.toLocaleString('pt-BR')}</strong>
-          </div>
-        ))}
+          {summary.average_rating !== null && <Stars value={summary.average_rating} />}
+        </article>
+        <article className="dash-kpi">
+          <span className="dash-kpi-label">Avaliações</span>
+          <div className="dash-kpi-main"><strong>{count(summary.total_records)}</strong></div>
+          <span className="dash-kpi-foot">
+            <b className="is-good">{percent(fiveStars, totalRatings)}</b> com 5 estrelas
+          </span>
+        </article>
+        <article className="dash-kpi">
+          <span className="dash-kpi-label">Pedidos</span>
+          <div className="dash-kpi-main"><strong>{count(orders.summary.total_orders)}</strong></div>
+          <span className="dash-kpi-foot">
+            <b className="is-good">{percent(orders.summary.delivered, orders.summary.total_orders)}</b> entregues
+          </span>
+        </article>
+        <article className="dash-kpi">
+          <span className="dash-kpi-label">Tickets em aberto</span>
+          <div className="dash-kpi-main"><strong className="is-accent">{count(orders.summary.open_tickets)}</strong></div>
+          <span className="dash-kpi-foot">
+            <b className="is-bad">{percent(lowRatings, totalRatings)}</b> das notas são 1 ou 2
+          </span>
+        </article>
       </section>
 
-      <header className="section-heading">
-        <div>
-          <p className="eyebrow">Pedidos Olist</p>
-          <h2>Visão da operação</h2>
-        </div>
-      </header>
-      <section className="stats-grid">
-        <div className="stat-card">
-          <span>Total de pedidos</span>
-          <strong>{metrics.orders.summary.total_orders.toLocaleString('pt-BR')}</strong>
-        </div>
-        <div className="stat-card">
-          <span>Entregues</span>
-          <strong>{metrics.orders.summary.delivered.toLocaleString('pt-BR')}</strong>
-        </div>
-        <div className="stat-card">
-          <span>Cancelados</span>
-          <strong>{metrics.orders.summary.canceled.toLocaleString('pt-BR')}</strong>
-        </div>
-        <div className="stat-card">
-          <span>Indisponíveis</span>
-          <strong>{metrics.orders.summary.unavailable.toLocaleString('pt-BR')}</strong>
-        </div>
-        <div className="stat-card">
-          <span>Tickets abertos</span>
-          <strong>{metrics.orders.summary.open_tickets.toLocaleString('pt-BR')}</strong>
-        </div>
-        <div className="stat-card">
-          <span>Tickets fechados</span>
-          <strong>{metrics.orders.summary.closed_tickets.toLocaleString('pt-BR')}</strong>
-        </div>
-      </section>
-
-      <section className="panel-grid">
-        <div className="panel chart-panel">
-          <h2>Tickets abertos e fechados</h2>
-          <div className="chart-container" role="img" aria-label="Distribuição de tickets abertos e fechados">
+      <section className="dash-grid">
+        <article className="panel span-8">
+          <header className="panel-head">
+            <div>
+              <h2>Avaliações por dia</h2>
+              <p>Diário (cinza) e média móvel de 7 dias (laranja)</p>
+            </div>
+            {peakDay.count > 0 && (
+              <span className="panel-chip">Pico: {count(peakDay.count)} em {formatDay(peakDay.date)}</span>
+            )}
+          </header>
+          <div className="chart-box" role="img" aria-label="Quantidade de avaliações por dia">
             <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={metrics.orders.by_ticket_status}
-                  dataKey="count"
-                  nameKey="status"
-                  cx="50%"
-                  cy="48%"
-                  innerRadius={65}
-                  outerRadius={105}
-                  paddingAngle={4}
-                  stroke="none"
-                >
-                  {metrics.orders.by_ticket_status.map((item) => (
-                    <Cell key={item.status} fill={TICKET_STATUS_COLORS[item.status]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(value, name) => [
-                    Number(value ?? 0).toLocaleString('pt-BR'),
-                    TICKET_STATUS_LABELS[String(name)] ?? String(name),
-                  ]}
-                  contentStyle={{
-                    background: '#111827',
-                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                    borderRadius: 10,
-                  }}
-                />
-                <Legend formatter={(value) => TICKET_STATUS_LABELS[value] ?? value} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-        <div className="panel chart-panel chart-panel-wide">
-          <h2>Avaliações por mês</h2>
-          <div className="chart-container chart-container-wide" role="img" aria-label="Quantidade mensal de avaliações e nota média">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={metrics.by_month} margin={{ top: 8, right: 4, bottom: 24, left: 0 }}>
-                <CartesianGrid stroke={CHART_GRID_COLOR} vertical={false} />
+              <ComposedChart data={daily} margin={{ top: 6, right: 6, bottom: 0, left: -12 }}>
+                <defs>
+                  <linearGradient id="dayFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={ORANGE} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={ORANGE} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke={GRID} vertical={false} />
                 <XAxis
-                  dataKey="month"
-                  tickFormatter={formatMonth}
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                  interval="preserveStartEnd"
-                  angle={-30}
-                  textAnchor="end"
-                  height={48}
+                  dataKey="date"
+                  tick={TICK}
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={40}
+                  tickFormatter={(value: string) => formatMonth(value.slice(0, 7))}
                 />
-                <YAxis
-                  yAxisId="reviews"
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                  tickFormatter={formatCount}
-                  width={46}
-                />
-                <YAxis
-                  yAxisId="rating"
-                  orientation="right"
-                  domain={[0, 5]}
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                  width={30}
-                />
+                <YAxis tick={TICK} tickLine={false} axisLine={false} tickFormatter={count} />
                 <Tooltip
-                  labelFormatter={(label) => formatMonth(String(label))}
+                  contentStyle={TOOLTIP_STYLE}
+                  labelFormatter={(value) => formatDay(String(value))}
                   formatter={(value, name) => [
-                    name === 'average_rating'
-                      ? `${Number(value ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / 5`
-                      : `${formatCount(Number(value ?? 0))} avaliações`,
-                    name === 'average_rating' ? 'Nota média' : 'Avaliações',
+                    count(Number(value ?? 0)),
+                    name === 'average' ? 'Média 7 dias' : 'No dia',
                   ]}
-                  contentStyle={{
-                    background: '#111827',
-                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                    borderRadius: 10,
-                  }}
                 />
-                <Legend
-                  formatter={(value) => value === 'average_rating' ? 'Nota média' : 'Avaliações'}
-                />
-                <Bar yAxisId="reviews" dataKey="count" fill="#60a5fa" radius={[4, 4, 0, 0]} />
-                <Line
-                  yAxisId="rating"
-                  dataKey="average_rating"
-                  name="average_rating"
-                  type="monotone"
-                  stroke="#fbbf24"
-                  strokeWidth={2}
-                  dot={false}
-                  connectNulls
-                />
+                <Bar dataKey="count" fill="#e2e8f0" maxBarSize={3} />
+                <Area type="monotone" dataKey="average" stroke={ORANGE} strokeWidth={2} fill="url(#dayFill)" />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </article>
 
-        {metrics.by_category.length > 0 && (
-          <div className="panel">
-            <h2>Por categoria</h2>
-            <ul>
-              {metrics.by_category.map((item) => (
-                <li key={item.category}><span>{item.category}</span><strong>{item.count.toLocaleString('pt-BR')}</strong></li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {metrics.by_rating.length > 0 && (
-          <div className="panel chart-panel">
-            <h2>Distribuição das notas</h2>
-            <div className="chart-container chart-container-horizontal" role="img" aria-label="Quantidade de avaliações por nota">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={[...metrics.by_rating].sort((left, right) => Number(left.rating) - Number(right.rating))}
-                  layout="vertical"
-                  margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
-                >
-                  <CartesianGrid stroke={CHART_GRID_COLOR} horizontal={false} />
-                  <XAxis
-                    type="number"
-                    tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                    tickFormatter={formatCount}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="rating"
-                    tick={{ fill: CHART_TICK_COLOR, fontSize: 12 }}
-                    tickFormatter={(value) => `${value} estrela(s)`}
-                    width={86}
-                  />
-                  <Tooltip
-                    formatter={(value) => [`${formatCount(Number(value ?? 0))} avaliações`, 'Quantidade']}
-                    contentStyle={{
-                      background: '#111827',
-                      border: '1px solid rgba(148, 163, 184, 0.3)',
-                      borderRadius: 10,
+        <article className="panel span-4">
+          <header className="panel-head">
+            <div>
+              <h2>Distribuição das notas</h2>
+              <p>{count(totalRatings)} avaliações</p>
+            </div>
+          </header>
+          <ul className="rating-list">
+            {ratings.map((item) => (
+              <li key={item.rating}>
+                <span className="rating-label">{item.rating} ★</span>
+                <div className="rating-track" aria-hidden="true">
+                  <i
+                    style={{
+                      width: `${totalRatings ? (item.count / totalRatings) * 100 : 0}%`,
+                      background: RATING_COLORS[item.rating] ?? ORANGE,
                     }}
                   />
-                  <Bar dataKey="count" name="Avaliações" fill="#a78bfa" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+                </div>
+                <span className="rating-share">{percent(item.count, totalRatings)}</span>
+                <span className="rating-count">{count(item.count)}</span>
+              </li>
+            ))}
+          </ul>
+        </article>
+
+        <article className="panel span-8">
+          <header className="panel-head">
+            <div>
+              <h2>Volume e nota média por mês</h2>
+              <p>Barras: avaliações · Linha: nota média</p>
             </div>
-          </div>
-        )}
-
-        <div className="panel chart-panel">
-          <h2>Pedidos por status</h2>
-          <div className="chart-container chart-container-horizontal" role="img" aria-label="Quantidade de pedidos por status logístico">
+          </header>
+          <div className="chart-box" role="img" aria-label="Avaliações e nota média por mês">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={metrics.orders.by_status.map((item) => ({
-                  ...item,
-                  label: STATUS_LABELS[item.status] ?? item.status,
-                }))}
-                layout="vertical"
-                margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
-              >
-                <CartesianGrid stroke={CHART_GRID_COLOR} horizontal={false} />
-                <XAxis
-                  type="number"
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                  tickFormatter={formatCount}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="label"
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                  width={112}
-                />
+              <ComposedChart data={metrics.by_month} margin={{ top: 6, right: 0, bottom: 0, left: -12 }}>
+                <CartesianGrid stroke={GRID} vertical={false} />
+                <XAxis dataKey="month" tick={TICK} tickLine={false} axisLine={false} tickFormatter={formatMonth} minTickGap={16} />
+                <YAxis yAxisId="count" tick={TICK} tickLine={false} axisLine={false} tickFormatter={count} />
+                <YAxis yAxisId="rating" orientation="right" domain={[1, 5]} tick={TICK} tickLine={false} axisLine={false} width={28} />
                 <Tooltip
-                  formatter={(value) => [`${formatCount(Number(value ?? 0))} pedidos`, 'Quantidade']}
-                  contentStyle={{
-                    background: '#111827',
-                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                    borderRadius: 10,
-                  }}
+                  contentStyle={TOOLTIP_STYLE}
+                  labelFormatter={(value) => formatMonth(String(value))}
+                  formatter={(value, name) =>
+                    name === 'average_rating'
+                      ? [Number(value).toLocaleString('pt-BR'), 'Nota média']
+                      : [count(Number(value ?? 0)), 'Avaliações']
+                  }
                 />
-                <Bar dataKey="count" name="Pedidos" fill="#38bdf8" radius={[0, 4, 4, 0]} />
-              </BarChart>
+                <Bar yAxisId="count" dataKey="count" fill={ORANGE} radius={[4, 4, 0, 0]} maxBarSize={26} />
+                <Line yAxisId="rating" type="monotone" dataKey="average_rating" stroke={INK} strokeWidth={2} dot={false} />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </article>
 
-        <div className="panel chart-panel">
-          <h2>Cidades com mais pedidos</h2>
-          <div className="chart-container chart-container-horizontal" role="img" aria-label="Dez cidades com maior quantidade de pedidos">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={metrics.orders.by_city.map((item) => ({
-                  ...item,
-                  label: `${formatCity(item.city)}, ${item.state}`,
-                }))}
-                layout="vertical"
-                margin={{ top: 4, right: 8, bottom: 4, left: 0 }}
-              >
-                <CartesianGrid stroke={CHART_GRID_COLOR} horizontal={false} />
-                <XAxis
-                  type="number"
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 11 }}
-                  tickFormatter={formatCount}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="label"
-                  tick={{ fill: CHART_TICK_COLOR, fontSize: 10 }}
-                  width={112}
-                />
-                <Tooltip
-                  formatter={(value, name, item) => [
-                    `${formatCount(Number(value ?? 0))} pedidos`,
-                    `${item.payload.label}${item.payload.customers ? ` (${formatCount(item.payload.customers)} clientes)` : ''}`,
-                  ]}
-                  contentStyle={{
-                    background: '#111827',
-                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                    borderRadius: 10,
-                  }}
-                />
-                <Bar dataKey="orders" name="Pedidos" fill="#34d399" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+        <article className="panel span-4">
+          <header className="panel-head">
+            <div>
+              <h2>Tickets</h2>
+              <p>Abertos x fechados</p>
+            </div>
+          </header>
+          <div className="donut">
+            <div className="donut-chart" role="img" aria-label="Tickets abertos e fechados">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={orders.by_ticket_status}
+                    dataKey="count"
+                    nameKey="status"
+                    innerRadius="72%"
+                    outerRadius="100%"
+                    startAngle={90}
+                    endAngle={-270}
+                    paddingAngle={orders.summary.open_tickets ? 2 : 0}
+                    stroke="none"
+                  >
+                    {orders.by_ticket_status.map((item) => (
+                      <Cell key={item.status} fill={item.status === 'open' ? ORANGE : '#e2e8f0'} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="donut-center">
+                <strong>{percent(orders.summary.closed_tickets, orders.summary.total_orders)}</strong>
+                <span>resolvidos</span>
+              </div>
+            </div>
+            <ul className="legend">
+              <li><i style={{ background: ORANGE }} />Abertos <b>{count(orders.summary.open_tickets)}</b></li>
+              <li><i style={{ background: '#cbd5e1' }} />Fechados <b>{count(orders.summary.closed_tickets)}</b></li>
+            </ul>
           </div>
-        </div>
+        </article>
 
+        <article className="panel span-4">
+          <header className="panel-head">
+            <div>
+              <h2>Top categorias</h2>
+              <p>Avaliações e nota média por categoria</p>
+            </div>
+          </header>
+          {metrics.by_category.length ? (
+            <BarList
+              rows={metrics.by_category.map((item) => ({
+                key: item.category,
+                label: humanize(item.category),
+                value: item.count,
+                meta: item.average_rating ? `★ ${item.average_rating.toLocaleString('pt-BR')}` : undefined,
+              }))}
+            />
+          ) : (
+            <p className="panel-empty">Sem categorias no dataset processado.</p>
+          )}
+        </article>
+
+        <article className="panel span-4">
+          <header className="panel-head">
+            <div>
+              <h2>Pedidos por status</h2>
+              <p>Situação logística atual</p>
+            </div>
+          </header>
+          <BarList
+            rows={orderStatus.map((item) => ({
+              key: item.status,
+              label: STATUS_LABELS[item.status] ?? item.status,
+              value: item.count,
+              color: STATUS_COLORS[item.status],
+              meta: percent(item.count, orders.summary.total_orders),
+            }))}
+          />
+        </article>
+
+        <article className="panel span-4 md-full">
+          <header className="panel-head">
+            <div>
+              <h2>Cidades com mais pedidos</h2>
+              <p>Top 10 por volume</p>
+            </div>
+          </header>
+          <BarList
+            rows={orders.by_city.map((item) => ({
+              key: `${item.city}-${item.state}`,
+              label: `${formatCity(item.city)}, ${item.state}`,
+              value: item.orders,
+              color: INK,
+              meta: `${count(item.customers)} clientes`,
+            }))}
+          />
+        </article>
       </section>
     </main>
   );
