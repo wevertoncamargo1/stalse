@@ -12,6 +12,7 @@ import {
   PieChart,
   ResponsiveContainer,
   Tooltip,
+  type TooltipContentProps,
   XAxis,
   YAxis,
 } from 'recharts';
@@ -28,7 +29,15 @@ type Metrics = {
     total_records: number;
     average_rating: number | null;
   };
-  by_day: Array<{ date: string; count: number }>;
+  by_day: Array<{
+    date: string;
+    count: number;
+    categories?: Array<{
+      category: string;
+      count: number;
+      ratings?: Array<{ rating: number | string; count: number }> | null;
+    }> | null;
+  }>;
   by_month: Array<{ month: string; count: number; average_rating: number | null }>;
   by_category: Array<{ category: string; count: number; average_rating?: number | null }>;
   by_rating: Array<{ rating: string; count: number }>;
@@ -90,6 +99,57 @@ const count = (value: number | string) => Number(value).toLocaleString('pt-BR');
 const percent = (part: number, total: number) =>
   total ? `${((part / total) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%` : '0%';
 const humanize = (value: string) => value.replaceAll('_', ' ');
+const chartDataIndex = (value: number | string | null | undefined): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+};
+
+function DailyTooltip({
+  active,
+  payload,
+}: TooltipContentProps) {
+  const day = payload?.[0]?.payload as Metrics['by_day'][number] | undefined;
+  if (!active || !day) return null;
+  const dayRatings = [5, 4, 3, 2, 1].map((rating) => ({
+    rating,
+    count:
+      day.categories?.reduce(
+        (sum, category) =>
+          sum +
+          (category.ratings?.find((item) => Number(item.rating) === rating)?.count ?? 0),
+        0
+      ) ?? 0,
+  }));
+
+  return (
+    <div className="daily-tooltip">
+      <strong className="daily-tooltip-date">{formatDay(day.date)}</strong>
+      <p className="daily-tooltip-total">{count(day.count)} {day.count === 1 ? 'avaliação' : 'avaliações'}</p>
+      {day.categories?.some((category) => category.ratings?.length) ? (
+        <ul className="rating-list daily-rating-list">
+          {dayRatings.map((item) => (
+            <li key={item.rating}>
+              <span className="rating-label">{item.rating} ★</span>
+              <div className="rating-track" aria-hidden="true">
+                <i
+                  style={{
+                    width: `${day.count ? (item.count / day.count) * 100 : 0}%`,
+                    background: RATING_COLORS[String(item.rating)] ?? ORANGE,
+                  }}
+                />
+              </div>
+              <span className="rating-share">{percent(item.count, day.count)}</span>
+              <span className="rating-count">{count(item.count)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="daily-tooltip-unavailable">Distribuição por nota indisponível.</p>
+      )}
+    </div>
+  );
+}
 
 function formatMonth(value: string): string {
   return new Date(`${value}-01T12:00:00`)
@@ -141,6 +201,8 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeDayIndex, setActiveDayIndex] = useState<number | null>(null);
+  const [activeMonthIndex, setActiveMonthIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchMetrics = async () => {
@@ -290,9 +352,23 @@ export default function DashboardPage() {
               <span className="panel-chip">Pico: {count(peakDay.count)} em {formatDay(peakDay.date)}</span>
             )}
           </header>
-          <div className="chart-box" role="img" aria-label="Quantidade de avaliações por dia">
+          <div className="chart-box" role="group" aria-label="Quantidade e categorias de avaliações por dia">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={daily} margin={{ top: 6, right: 6, bottom: 0, left: -12 }}>
+              <ComposedChart
+                data={daily}
+                accessibilityLayer
+                margin={{ top: 6, right: 6, bottom: 0, left: -12 }}
+                onMouseMove={(state) => {
+                  const index = chartDataIndex(state.activeTooltipIndex);
+                  setActiveDayIndex(
+                    state.isTooltipActive ? index : null
+                  );
+                }}
+                onMouseLeave={() => setActiveDayIndex(null)}
+                onClick={(state) => {
+                  setActiveDayIndex(chartDataIndex(state.activeTooltipIndex));
+                }}
+              >
                 <defs>
                   <linearGradient id="dayFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={ORANGE} stopOpacity={0.35} />
@@ -310,15 +386,27 @@ export default function DashboardPage() {
                 />
                 <YAxis tick={TICK} tickLine={false} axisLine={false} tickFormatter={count} />
                 <Tooltip
-                  contentStyle={TOOLTIP_STYLE}
-                  labelFormatter={(value) => formatDay(String(value))}
-                  formatter={(value, name) => [
-                    count(Number(value ?? 0)),
-                    name === 'average' ? 'Média 7 dias' : 'No dia',
-                  ]}
+                  content={(props) => <DailyTooltip {...props} />}
+                  cursor={{ fill: '#fff4eb', opacity: 0.6 }}
                 />
-                <Bar dataKey="count" fill="#e2e8f0" maxBarSize={3} />
-                <Area type="monotone" dataKey="average" stroke={ORANGE} strokeWidth={2} fill="url(#dayFill)" />
+                <Bar dataKey="count" fill="#e2e8f0" maxBarSize={8}>
+                  {daily.map((day, index) => (
+                    <Cell
+                      key={day.date}
+                      fill={index === activeDayIndex ? ORANGE : '#e2e8f0'}
+                      fillOpacity={activeDayIndex === null || index === activeDayIndex ? 1 : 0.22}
+                    />
+                  ))}
+                </Bar>
+                <Area
+                  type="monotone"
+                  dataKey="average"
+                  stroke={ORANGE}
+                  strokeWidth={2}
+                  strokeOpacity={activeDayIndex === null ? 1 : 0.3}
+                  fill="url(#dayFill)"
+                  fillOpacity={activeDayIndex === null ? 1 : 0.25}
+                />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -357,9 +445,23 @@ export default function DashboardPage() {
               <p>Barras: avaliações · Linha: nota média</p>
             </div>
           </header>
-          <div className="chart-box" role="img" aria-label="Avaliações e nota média por mês">
+          <div className="chart-box" role="group" aria-label="Avaliações e nota média por mês">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={metrics.by_month} margin={{ top: 6, right: 0, bottom: 0, left: -12 }}>
+              <ComposedChart
+                data={metrics.by_month}
+                accessibilityLayer
+                margin={{ top: 6, right: 0, bottom: 0, left: -12 }}
+                onMouseMove={(state) => {
+                  const index = chartDataIndex(state.activeTooltipIndex);
+                  setActiveMonthIndex(
+                    state.isTooltipActive ? index : null
+                  );
+                }}
+                onMouseLeave={() => setActiveMonthIndex(null)}
+                onClick={(state) => {
+                  setActiveMonthIndex(chartDataIndex(state.activeTooltipIndex));
+                }}
+              >
                 <CartesianGrid stroke={GRID} vertical={false} />
                 <XAxis dataKey="month" tick={TICK} tickLine={false} axisLine={false} tickFormatter={formatMonth} minTickGap={16} />
                 <YAxis yAxisId="count" tick={TICK} tickLine={false} axisLine={false} tickFormatter={count} />
@@ -372,9 +474,26 @@ export default function DashboardPage() {
                       ? [Number(value).toLocaleString('pt-BR'), 'Nota média']
                       : [count(Number(value ?? 0)), 'Avaliações']
                   }
+                  cursor={{ fill: '#fff4eb', opacity: 0.6 }}
                 />
-                <Bar yAxisId="count" dataKey="count" fill={ORANGE} radius={[4, 4, 0, 0]} maxBarSize={26} />
-                <Line yAxisId="rating" type="monotone" dataKey="average_rating" stroke={INK} strokeWidth={2} dot={false} />
+                <Bar yAxisId="count" dataKey="count" fill={ORANGE} radius={[4, 4, 0, 0]} maxBarSize={26}>
+                  {metrics.by_month.map((month, index) => (
+                    <Cell
+                      key={month.month}
+                      fill={ORANGE}
+                      fillOpacity={activeMonthIndex === null || index === activeMonthIndex ? 1 : 0.18}
+                    />
+                  ))}
+                </Bar>
+                <Line
+                  yAxisId="rating"
+                  type="monotone"
+                  dataKey="average_rating"
+                  stroke={INK}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 5, fill: INK, stroke: '#fff', strokeWidth: 2 }}
+                />
               </ComposedChart>
             </ResponsiveContainer>
           </div>

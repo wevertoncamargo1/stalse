@@ -24,7 +24,7 @@ export default function AuthGate({ nav, children }: { nav: ReactNode; children: 
   useEffect(() => {
     if (authed === null) return;
     if (!authed && !onLoginPage) router.replace('/login');
-    if (authed && onLoginPage) router.replace('/tickets');
+    if (authed && onLoginPage) router.replace('/');
   }, [authed, onLoginPage, router]);
 
   if (onLoginPage) return <>{children}</>;

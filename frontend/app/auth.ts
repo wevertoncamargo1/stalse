@@ -2,6 +2,24 @@ export const AUTH_STORAGE_KEY = 'stalse_auth';
 export const AUTH_CHANGE_EVENT = 'stalse-auth-change';
 export const DEMO_USERNAME = 'admin';
 export const DEMO_PASSWORD = 'admin';
+const DEMO_PASSWORD_STORAGE_KEY = 'stalse_demo_password';
+
+export function getDemoPassword(): string {
+  try {
+    return window.localStorage.getItem(DEMO_PASSWORD_STORAGE_KEY) ?? DEMO_PASSWORD;
+  } catch {
+    return DEMO_PASSWORD;
+  }
+}
+
+export function setDemoPassword(password: string): boolean {
+  try {
+    window.localStorage.setItem(DEMO_PASSWORD_STORAGE_KEY, password);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function isAuthenticated(): boolean {
   try {
@@ -12,7 +30,7 @@ export function isAuthenticated(): boolean {
 }
 
 export function signIn(username: string, password: string): boolean {
-  if (username.trim() !== DEMO_USERNAME || password !== DEMO_PASSWORD) return false;
+  if (username.trim() !== DEMO_USERNAME || password !== getDemoPassword()) return false;
   try {
     window.localStorage.setItem(AUTH_STORAGE_KEY, '1');
   } catch {
