@@ -153,8 +153,8 @@ function DailyReviewsChart({ data }: { data: DailyChartPoint[] }) {
   const [tooltipPosition, setTooltipPosition] = useState({ left: 8, top: 8 });
   const chartRef = useRef<HTMLDivElement>(null);
   const viewWidth = 720;
-  const viewHeight = 260;
-  const margin = { top: 8, right: 10, bottom: 30, left: 52 };
+  const viewHeight = 305;
+  const margin = { top: 8, right: 10, bottom: 72, left: 52 };
   const plotWidth = viewWidth - margin.left - margin.right;
   const plotHeight = viewHeight - margin.top - margin.bottom;
 
@@ -185,16 +185,30 @@ function DailyReviewsChart({ data }: { data: DailyChartPoint[] }) {
       ? `${averageLine}L${points[points.length - 1].x.toFixed(2)} ${(margin.top + plotHeight).toFixed(2)}L${points[0].x.toFixed(2)} ${(margin.top + plotHeight).toFixed(2)}Z`
       : '';
 
-    let lastMonth = '';
-    let lastTickX = Number.NEGATIVE_INFINITY;
-    const months = data.flatMap((item, index) => {
+    const months = data.reduce<Array<{
+      key: string;
+      startX: number;
+      endX: number;
+      centerX: number;
+      label: string;
+    }>>((groups, item, index) => {
       const month = item.date.slice(0, 7);
-      const tickX = x(index);
-      if (month === lastMonth || tickX - lastTickX < 52) return [];
-      lastMonth = month;
-      lastTickX = tickX;
-      return [{ x: tickX, label: formatMonth(month) }];
-    });
+      const pointX = x(index);
+      const current = groups[groups.length - 1];
+      if (current?.key === month) {
+        current.endX = pointX;
+        current.centerX = (current.startX + pointX) / 2;
+      } else {
+        groups.push({
+          key: month,
+          startX: pointX,
+          endX: pointX,
+          centerX: pointX,
+          label: formatMonth(month),
+        });
+      }
+      return groups;
+    }, []);
 
     return {
       bars,
@@ -254,6 +268,9 @@ function DailyReviewsChart({ data }: { data: DailyChartPoint[] }) {
   const activePoint = activeIndex === null ? null : geometry.points[activeIndex];
   const activeDay = activeIndex === null ? null : data[activeIndex];
   const baseline = margin.top + plotHeight;
+  const monthBandY = baseline + 8;
+  const monthLabelY = baseline + 42;
+  const dayStep = plotWidth / Math.max(data.length, 1);
 
   return (
     <div
@@ -287,18 +304,33 @@ function DailyReviewsChart({ data }: { data: DailyChartPoint[] }) {
             </text>
           </g>
         ))}
-        {geometry.months.map((month) => (
-          <text
-            key={month.label}
-            x={month.x}
-            y={viewHeight - 8}
-            textAnchor="middle"
-            fill={TICK.fill}
-            fontSize={TICK.fontSize}
-          >
-            {month.label}
-          </text>
-        ))}
+        {geometry.months.map((month) => {
+          const startX = Math.max(margin.left, month.startX - dayStep / 2);
+          const endX = Math.min(viewWidth - margin.right, month.endX + dayStep / 2);
+          return (
+            <g key={month.key}>
+              <line
+                x1={startX}
+                x2={endX}
+                y1={monthBandY}
+                y2={monthBandY}
+                stroke={GRID}
+              />
+              <line x1={startX} x2={startX} y1={baseline + 3} y2={monthBandY} stroke={GRID} />
+              <line x1={endX} x2={endX} y1={baseline + 3} y2={monthBandY} stroke={GRID} />
+              <text
+                x={month.centerX}
+                y={monthLabelY}
+                textAnchor="middle"
+                fill={TICK.fill}
+                fontSize={10}
+                transform={`rotate(-55 ${month.centerX} ${monthLabelY})`}
+              >
+                {month.label}
+              </text>
+            </g>
+          );
+        })}
         <path d={geometry.bars} fill="#e2e8f0" fillOpacity={activeIndex === null ? 1 : 0.22} />
         <path d={geometry.averageArea} fill="url(#dayFill)" fillOpacity={activeIndex === null ? 1 : 0.25} />
         <path
@@ -350,9 +382,10 @@ function DailyReviewsChart({ data }: { data: DailyChartPoint[] }) {
 }
 
 function formatMonth(value: string): string {
-  return new Date(`${value}-01T12:00:00`)
-    .toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })
-    .replace('.', '');
+  const date = new Date(`${value}-01T12:00:00`);
+  const month = date.toLocaleDateString('pt-BR', { month: 'short' }).replace(/\.$/, '');
+  const year = date.toLocaleDateString('pt-BR', { year: '2-digit' });
+  return `${month}/${year}`;
 }
 
 function formatDay(value: string): string {
@@ -605,12 +638,12 @@ export default function DashboardPage() {
               <p>Barras: avaliações · Linha: nota média</p>
             </div>
           </header>
-          <div className="chart-box" role="group" aria-label="Avaliações e nota média por mês">
+          <div className="chart-box monthly-reviews-chart" role="group" aria-label="Avaliações e nota média por mês">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={metrics.by_month}
                 accessibilityLayer
-                margin={{ top: 6, right: 0, bottom: 0, left: -12 }}
+                margin={{ top: 6, right: 8, bottom: 0, left: -12 }}
                 onMouseMove={(state) => {
                   const index = chartDataIndex(state.activeTooltipIndex);
                   setActiveMonthIndex(
@@ -623,12 +656,21 @@ export default function DashboardPage() {
                 }}
               >
                 <CartesianGrid stroke={GRID} vertical={false} />
-                <XAxis dataKey="month" tick={TICK} tickLine={false} axisLine={false} tickFormatter={formatMonth} minTickGap={16} />
+                <XAxis
+                  dataKey="month"
+                  tick={{ ...TICK, angle: -45, textAnchor: 'end' }}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={formatMonth}
+                  interval={0}
+                  tickMargin={8}
+                  height={72}
+                />
                 <YAxis yAxisId="count" tick={TICK} tickLine={false} axisLine={false} tickFormatter={count} />
                 <YAxis yAxisId="rating" orientation="right" domain={[1, 5]} tick={TICK} tickLine={false} axisLine={false} width={28} />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
-                  labelFormatter={(value) => formatMonth(String(value))}
+                  labelStyle={{ display: 'none' }}
                   formatter={(value, name) =>
                     name === 'average_rating'
                       ? [Number(value).toLocaleString('pt-BR'), 'Nota média']
