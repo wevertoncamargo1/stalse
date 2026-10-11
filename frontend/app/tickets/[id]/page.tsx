@@ -281,45 +281,67 @@ export default function TicketDetailPage({ params }: { params: { id: string } })
         <div className="separator" />
         <h2>Atendimento</h2>
         <p className="field-help">O status do pedido é compartilhado com a coluna do kanban. A prioridade continua sendo uma informação interna.</p>
-        {!operator.trim() && <p className="field-help">Informe seu nome no campo Operador da barra superior para registrar alterações.</p>}
-        <div className="ticket-fields">
-          <label className="field-control">
-            <strong>Status do pedido</strong>
-            <select
-              value={ticket.order_status}
-              disabled={updating || !operator.trim()}
-              onChange={(event) => {
-                const value = event.target.value as (typeof ORDER_STATUSES)[number];
-                void updateTicket({ order_status: value });
-              }}
-            >
-              {ORDER_STATUSES.map((status) => (
-                <option key={status} value={status}>
-                  {ORDER_STATUS_LABELS[status]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field-control">
-            <strong>Prioridade</strong>
-            <select
-              value={ticket.priority ?? ''}
-              disabled={updating || !operator.trim()}
-              onChange={(event) => {
-                const value = event.target.value;
-                if (value === '') {
-                  void updateTicket({ priority: null });
-                } else if (value === 'low' || value === 'medium' || value === 'high') {
-                  void updateTicket({ priority: value });
-                }
-              }}
-            >
-              <option value="">Não definida</option>
-              <option value="low">Baixa</option>
-              <option value="medium">Média</option>
-              <option value="high">Alta</option>
-            </select>
-          </label>
+        {!operator.trim() && <p className="field-help">Informe seu nome no campo Operador do menu lateral para registrar alterações.</p>}
+        <div className="action-group">
+          <span className="action-label">Status do pedido</span>
+          <div className="chip-buttons" role="group" aria-label="Alterar status do pedido">
+            {ORDER_STATUSES.map((status) => (
+              <button
+                key={status}
+                type="button"
+                className={ticket.order_status === status ? 'is-active' : ''}
+                aria-pressed={ticket.order_status === status}
+                disabled={updating || !operator.trim() || ticket.order_status === status}
+                onClick={() => void updateTicket({ order_status: status })}
+              >
+                {ORDER_STATUS_LABELS[status]}
+              </button>
+            ))}
+          </div>
+          <div className="quick-actions">
+            {ticket.status === 'closed' ? (
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={updating || !operator.trim()}
+                onClick={() => void updateTicket({ order_status: 'processing' })}
+              >
+                Reabrir ticket
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={updating || !operator.trim()}
+                onClick={() => void updateTicket({ order_status: 'delivered' })}
+              >
+                Fechar ticket (marcar como entregue)
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="action-group">
+          <span className="action-label">Prioridade</span>
+          <div className="chip-buttons" role="group" aria-label="Alterar prioridade">
+            {([
+              { value: null, label: 'Sem prioridade' },
+              { value: 'low', label: 'Baixa' },
+              { value: 'medium', label: 'Média' },
+              { value: 'high', label: 'Alta' },
+            ] as const).map((option) => (
+              <button
+                key={option.label}
+                type="button"
+                className={`${ticket.priority === option.value ? 'is-active' : ''} chip-${option.value ?? 'none'}`}
+                aria-pressed={ticket.priority === option.value}
+                disabled={updating || !operator.trim() || ticket.priority === option.value}
+                onClick={() => void updateTicket({ priority: option.value })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <p className="field-help">Fechar o ticket ou marcar prioridade alta dispara o webhook do n8n.</p>
         </div>
         {updating && <p className="save-status">Salvando alteração…</p>}
         {ticket.updated_at && <p><strong>Última atualização:</strong> {formatDate(ticket.updated_at)}</p>}

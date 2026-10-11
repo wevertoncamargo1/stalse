@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-10T12:09:30.756613",
+  "generated_at": "2026-10-10T22:18:55.408674",
   "source_file": "olist_order_reviews_dataset.csv",
   "record_type": "reviews",
   "summary": {
@@ -2669,7 +2669,58 @@
       "average_rating": 4.21
     }
   ],
-  "by_category": [],
+  "by_category": [
+    {
+      "category": "cama_mesa_banho",
+      "count": 9331,
+      "average_rating": 3.98
+    },
+    {
+      "category": "beleza_saude",
+      "count": 8788,
+      "average_rating": 4.19
+    },
+    {
+      "category": "esporte_lazer",
+      "count": 7684,
+      "average_rating": 4.17
+    },
+    {
+      "category": "informatica_acessorios",
+      "count": 6673,
+      "average_rating": 4.03
+    },
+    {
+      "category": "moveis_decoracao",
+      "count": 6368,
+      "average_rating": 4.02
+    },
+    {
+      "category": "utilidades_domesticas",
+      "count": 5813,
+      "average_rating": 4.15
+    },
+    {
+      "category": "relogios_presentes",
+      "count": 5563,
+      "average_rating": 4.07
+    },
+    {
+      "category": "telefonia",
+      "count": 4156,
+      "average_rating": 4.01
+    },
+    {
+      "category": "automotivo",
+      "count": 3879,
+      "average_rating": 4.1
+    },
+    {
+      "category": "brinquedos",
+      "count": 3836,
+      "average_rating": 4.19
+    }
+  ],
   "by_rating": [
     {
       "rating": "5",

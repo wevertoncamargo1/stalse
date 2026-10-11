@@ -962,6 +962,15 @@ def ensure_remote_db() -> None:
         conn.close()
 
 
+LIST_COLUMNS = ", ".join(
+    f"orders.{column}"
+    for column in (
+        "id", "order_id", "customer_id", "customer_unique_id", "customer_city",
+        "customer_state", "order_status", "status", "order_purchase_timestamp",
+        "product_categories", "item_count", "items_total", "freight_total",
+        "payment_total", "payment_types", "priority", "updated_at",
+    )
+)
 PRIORITY_RANK_SQL = (
     "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END"
 )
@@ -1084,7 +1093,7 @@ def ticket_page(
         return [], total
     rows = conn.execute(
         f"""
-        SELECT * FROM orders
+        SELECT {LIST_COLUMNS} FROM orders
         {where_clause}
         ORDER BY
             {PRIORITY_RANK_SQL},
@@ -1211,7 +1220,7 @@ def ticket_board(
             union_parts.append(
                 f"""
                 SELECT * FROM (
-                    SELECT orders.*, {index} AS _col FROM orders
+                    SELECT {LIST_COLUMNS}, {index} AS _col FROM orders
                     {base_where} {joiner} order_status = ?
                     ORDER BY {PRIORITY_RANK_SQL}, order_purchase_timestamp DESC, id DESC
                     LIMIT ?
@@ -1236,7 +1245,7 @@ def ticket_board(
         f"""
         WITH ranked_orders AS (
             SELECT
-                orders.*,
+                {LIST_COLUMNS},
                 COUNT(*) OVER (PARTITION BY order_status) AS _column_total,
                 ROW_NUMBER() OVER (
                     PARTITION BY order_status
